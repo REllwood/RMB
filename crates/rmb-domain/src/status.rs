@@ -70,6 +70,27 @@ impl InvoiceStatus {
         // Only drafts may be edited; issued invoices are immutable (void + reissue to change).
         matches!(self, InvoiceStatus::Draft)
     }
+
+    pub fn as_db(self) -> &'static str {
+        match self {
+            InvoiceStatus::Draft => "draft",
+            InvoiceStatus::Issued => "issued",
+            InvoiceStatus::PartPaid => "part_paid",
+            InvoiceStatus::Paid => "paid",
+            InvoiceStatus::Void => "void",
+        }
+    }
+
+    pub fn from_db(s: &str) -> Option<Self> {
+        match s {
+            "draft" => Some(InvoiceStatus::Draft),
+            "issued" => Some(InvoiceStatus::Issued),
+            "part_paid" => Some(InvoiceStatus::PartPaid),
+            "paid" => Some(InvoiceStatus::Paid),
+            "void" => Some(InvoiceStatus::Void),
+            _ => None,
+        }
+    }
 }
 
 /// Derive the payment-based status of an *issued* invoice from its total and amount paid.

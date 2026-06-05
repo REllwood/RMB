@@ -19,6 +19,27 @@ pub enum MovementReason {
     Return,
 }
 
+impl MovementReason {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            MovementReason::Receipt => "receipt",
+            MovementReason::Sale => "sale",
+            MovementReason::Adjustment => "adjustment",
+            MovementReason::Return => "return",
+        }
+    }
+
+    pub fn from_db(s: &str) -> Option<Self> {
+        match s {
+            "receipt" => Some(MovementReason::Receipt),
+            "sale" => Some(MovementReason::Sale),
+            "adjustment" => Some(MovementReason::Adjustment),
+            "return" => Some(MovementReason::Return),
+            _ => None,
+        }
+    }
+}
+
 /// On-hand quantity = sum of all movement deltas. The cached `items.qty_on_hand` column must
 /// always equal this (updated in the same transaction as the movement insert).
 pub fn on_hand(deltas: impl IntoIterator<Item = i64>) -> i64 {

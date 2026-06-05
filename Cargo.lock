@@ -3017,6 +3017,7 @@ version = "0.1.0"
 dependencies = [
  "libsqlite3-sys",
  "rmb-domain",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sqlx",
