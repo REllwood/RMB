@@ -9,6 +9,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+use rmb_domain::status::JobStatus;
+
 use crate::db::Db;
 use crate::error::DataError;
 use crate::repos::invoices::{self, LineInput};
@@ -109,8 +111,24 @@ pub async fn list(db: &Db) -> Result<Vec<Job>, DataError> {
 }
 
 pub async fn set_status(db: &Db, id: i64, status: &str) -> Result<(), DataError> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT status FROM job WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    let current = current.ok_or_else(|| DataError::Other("job not found".into()))?;
+    let from = JobStatus::from_db(&current)
+        .ok_or_else(|| DataError::Other("invalid current status".into()))?;
+    let target = JobStatus::from_db(status)
+        .ok_or_else(|| DataError::Other(format!("unknown status '{status}'")))?;
+    // `invoiced` is system-only (set when the job is billed); reject manual moves into/out of it.
+    if !from.can_transition_to(target) {
+        return Err(DataError::Other(format!(
+            "cannot move a job from {current} to {status}"
+        )));
+    }
     sqlx::query("UPDATE job SET status = ? WHERE id = ?")
-        .bind(status)
+        .bind(target.as_db())
         .bind(id)
         .execute(db)
         .await?;
@@ -278,10 +296,11 @@ pub async fn invoice_from_job(db: &Db, id: i64) -> Result<i64, DataError> {
         ));
     }
 
-    // create_draft manages its own transaction; then mark source rows + link the invoice.
-    let invoice_id = invoices::create_draft(db, detail.job.customer_id, &lines, None, "").await?;
-
+    // Atomic: the draft invoice and the "invoiced" marks (plus job status + link) commit together,
+    // so a crash can't leave a billed invoice with un-marked source rows that a retry would re-bill.
     let mut tx = db.begin().await?;
+    let invoice_id =
+        invoices::create_draft_on(&mut tx, detail.job.customer_id, &lines, None, "").await?;
     sqlx::query("UPDATE time_entry SET invoiced = 1 WHERE job_id = ? AND invoiced = 0")
         .bind(id)
         .execute(&mut *tx)
@@ -378,6 +397,39 @@ mod tests {
             get_detail(&pool, job).await?.unwrap().job.status,
             "invoiced"
         );
+
+        // A billed job's status is system-owned: it can't be manually moved back out of `invoiced`.
+        assert!(set_status(&pool, job, "open").await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn set_status_validates(pool: Db) -> Result<(), DataError> {
+        let customer = customers::create(
+            &pool,
+            &customers::CustomerInput {
+                name: "Acme".into(),
+                email: String::new(),
+                phone: String::new(),
+                billing_address: String::new(),
+                notes: String::new(),
+            },
+        )
+        .await?;
+        let job = create(
+            &pool,
+            &JobInput {
+                customer_id: customer,
+                title: "X".into(),
+                description: String::new(),
+            },
+        )
+        .await?;
+        set_status(&pool, job, "in_progress").await?;
+        set_status(&pool, job, "done").await?;
+        // Unknown status, and manual jump to the system-only `invoiced`, are both rejected.
+        assert!(set_status(&pool, job, "banana").await.is_err());
+        assert!(set_status(&pool, job, "invoiced").await.is_err());
         Ok(())
     }
 }

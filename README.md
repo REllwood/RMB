@@ -5,7 +5,7 @@ customers, catalog, stock, quotes, invoices, payments — with **all data on you
 subscriptions, no cloud, works fully offline.
 
 > Status: **v1 complete & tested.** Customers, catalog, quotes, jobs/timekeeping, invoices, payments,
-> PDF export, and the dashboard all work end to end — **66 tests** (money/tax/inventory property-tested,
+> PDF export, and the dashboard all work end to end — **68 tests** (money/tax/inventory property-tested,
 > every screen accessibility-tested). See [Roadmap](#roadmap) for what's next.
 
 ## What it does today

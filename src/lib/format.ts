@@ -10,8 +10,17 @@ export function formatMoney(
 ): string {
   const scale = options?.scale ?? 2;
   const major = minor / 10 ** scale;
-  return new Intl.NumberFormat(options?.locale, {
-    style: "currency",
-    currency,
-  }).format(major);
+  try {
+    return new Intl.NumberFormat(options?.locale, {
+      style: "currency",
+      currency,
+    }).format(major);
+  } catch {
+    // An invalid/unknown ISO-4217 code makes Intl throw a RangeError. Degrade to a plain number
+    // with the code suffixed instead of blanking every money figure on the screen.
+    return `${new Intl.NumberFormat(options?.locale, {
+      minimumFractionDigits: scale,
+      maximumFractionDigits: scale,
+    }).format(major)} ${currency}`;
+  }
 }

@@ -55,6 +55,9 @@ pub async fn create_draft(
     valid_until: Option<&str>,
     notes: &str,
 ) -> Result<i64, DataError> {
+    if lines.is_empty() {
+        return Err(DataError::Other("a quote needs at least one line".into()));
+    }
     let doc_lines = lines
         .iter()
         .map(to_doc_line)
@@ -63,7 +66,9 @@ pub async fn create_draft(
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
     let mut tx = db.begin().await?;
-    // Quotes are free-form; assign a number at create from the quote counter.
+    // Quotes are estimates: a number is assigned now from the quote counter. Unlike invoices, quote
+    // numbering is intentionally **not** gapless — deleting/abandoning a draft can leave a gap.
+    // (Legally-gapless invoice numbers are assigned only at issue.)
     let (prefix, seq, pad) = sqlx::query_as::<_, (String, i64, i64)>(
         "SELECT quote_prefix, quote_next_seq, number_pad FROM settings WHERE id = 1",
     )
@@ -178,19 +183,18 @@ pub async fn delete(db: &Db, id: i64) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Convert a quote into a draft invoice (copying its lines), link both, and mark it converted.
+/// Convert an **accepted** quote into a draft invoice (copying its lines), link both, and mark it
+/// converted — all in one transaction so a crash can't orphan a draft or permit a second conversion.
 pub async fn convert_to_invoice(db: &Db, id: i64) -> Result<i64, DataError> {
     let detail = get_detail(db, id)
         .await?
         .ok_or_else(|| DataError::Other("quote not found".into()))?;
     let from = QuoteStatus::from_db(&detail.quote.status)
         .ok_or_else(|| DataError::Other("invalid status".into()))?;
-    if matches!(
-        from,
-        QuoteStatus::Converted | QuoteStatus::Declined | QuoteStatus::Expired
-    ) {
+    // Only an accepted quote may be converted (the status machine's one path to `converted`).
+    if from != QuoteStatus::Accepted {
         return Err(DataError::Other(format!(
-            "a {} quote cannot be converted",
+            "only an accepted quote can be converted (this one is {})",
             detail.quote.status
         )));
     }
@@ -209,8 +213,9 @@ pub async fn convert_to_invoice(db: &Db, id: i64) -> Result<i64, DataError> {
         })
         .collect();
 
-    let invoice_id = invoices::create_draft(
-        db,
+    let mut tx = db.begin().await?;
+    let invoice_id = invoices::create_draft_on(
+        &mut tx,
         detail.quote.customer_id,
         &lines,
         None,
@@ -220,13 +225,14 @@ pub async fn convert_to_invoice(db: &Db, id: i64) -> Result<i64, DataError> {
     sqlx::query("UPDATE quote SET status = 'converted', converted_invoice_id = ? WHERE id = ?")
         .bind(invoice_id)
         .bind(id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
     sqlx::query("UPDATE invoice SET source_quote_id = ? WHERE id = ?")
         .bind(id)
         .bind(invoice_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(invoice_id)
 }
 

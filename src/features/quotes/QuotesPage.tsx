@@ -285,7 +285,7 @@ function QuoteDetailView({ id }: { id: number }) {
               <Button variant="outline" onClick={() => setStatus.mutate("declined")}>Decline</Button>
             </>
           )}
-          {quote.status !== "converted" && quote.status !== "declined" && quote.status !== "expired" && (
+          {quote.status === "accepted" && (
             <Button variant="default" onClick={() => convert.mutate(undefined)} disabled={convert.isPending}>
               Convert to invoice
             </Button>

@@ -186,7 +186,7 @@ function JobDetailView({ id }: { id: number }) {
                     <TableCell>{t.description || "Labour"}</TableCell>
                     <TableCell className="text-right">{(t.minutes / 60).toFixed(2)}</TableCell>
                     <TableCell className="text-right">{money(t.rate_minor)}/h</TableCell>
-                    <TableCell className="text-right">{money(Math.round((t.rate_minor * t.minutes) / 60))}</TableCell>
+                    <TableCell className="text-right">{money(Math.round(t.rate_minor * (Math.round((t.minutes / 60) * 100) / 100)))}</TableCell>
                     <TableCell className="text-right">{!t.invoiced && <Button variant="ghost" size="sm" onClick={() => delTime.mutate(t.id)} aria-label="Remove time entry">✕</Button>}</TableCell>
                   </TableRow>
                 ))}

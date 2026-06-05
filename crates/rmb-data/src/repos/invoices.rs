@@ -95,14 +95,22 @@ fn tracked_qty(qty_str: &str) -> Result<i64, DataError> {
     Ok(qty.to_i64().unwrap_or(0))
 }
 
-/// Create a draft invoice from line inputs (computes + stores line/total breakdowns).
-pub async fn create_draft(
-    db: &Db,
+/// Create a draft invoice on a **caller-supplied** connection/transaction (does not commit), so a
+/// caller can make a larger operation atomic — quote conversion and invoice-from-job both create
+/// the draft and mark their source rows in one transaction, closing the crash-between-commits window
+/// that would otherwise allow the same work to be billed twice.
+pub(crate) async fn create_draft_on(
+    conn: &mut sqlx::SqliteConnection,
     customer_id: i64,
     lines: &[LineInput],
     due_date: Option<&str>,
     notes: &str,
 ) -> Result<i64, DataError> {
+    if lines.is_empty() {
+        return Err(DataError::Other(
+            "an invoice needs at least one line".into(),
+        ));
+    }
     let doc_lines = lines
         .iter()
         .map(to_doc_line)
@@ -110,7 +118,6 @@ pub async fn create_draft(
     let totals = total_lines(&doc_lines);
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
-    let mut tx = db.begin().await?;
     let invoice_id = sqlx::query(
         "INSERT INTO invoice (customer_id, status, due_date, subtotal_minor, tax_minor, total_minor, tax_summary, notes) \
          VALUES (?, 'draft', ?, ?, ?, ?, ?, ?)",
@@ -122,7 +129,7 @@ pub async fn create_draft(
     .bind(totals.total.minor())
     .bind(tax_summary)
     .bind(notes)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?
     .last_insert_rowid();
 
@@ -145,9 +152,22 @@ pub async fn create_draft(
         .bind(lt.tax.minor())
         .bind(lt.gross.minor())
         .bind(i as i64)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
+    Ok(invoice_id)
+}
+
+/// Create a draft invoice from line inputs in its own transaction.
+pub async fn create_draft(
+    db: &Db,
+    customer_id: i64,
+    lines: &[LineInput],
+    due_date: Option<&str>,
+    notes: &str,
+) -> Result<i64, DataError> {
+    let mut tx = db.begin().await?;
+    let invoice_id = create_draft_on(&mut tx, customer_id, lines, due_date, notes).await?;
     tx.commit().await?;
     Ok(invoice_id)
 }
