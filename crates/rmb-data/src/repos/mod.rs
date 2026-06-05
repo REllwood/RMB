@@ -5,6 +5,7 @@ pub mod customers;
 pub mod dashboard;
 pub mod invoices;
 pub mod items;
+pub mod jobs;
 pub mod meta;
 pub mod payments;
 pub mod quotes;

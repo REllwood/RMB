@@ -163,3 +163,71 @@ export interface QuoteDetail {
   quote: QuoteRow;
   lines: QuoteLineRow[];
 }
+
+export interface Job {
+  id: number;
+  customer_id: number;
+  title: string;
+  description: string;
+  status: string;
+  source_quote_id: number | null;
+  created_at: string;
+}
+
+export interface JobInput {
+  customer_id: number;
+  title: string;
+  description: string;
+}
+
+export interface TimeEntry {
+  id: number;
+  date: string;
+  minutes: number;
+  rate_minor: number;
+  description: string;
+  tax_rate_name: string;
+  tax_rate_bp: number;
+  tax_inclusive: boolean;
+  invoiced: boolean;
+}
+
+export interface TimeEntryInput {
+  date: string;
+  minutes: number;
+  rate_minor: number;
+  description: string;
+  tax_rate_name: string;
+  tax_rate_bp: number;
+  tax_inclusive: boolean;
+}
+
+export interface JobMaterial {
+  id: number;
+  item_id: number | null;
+  description: string;
+  quantity: string;
+  unit_price_minor: number;
+  tax_rate_name: string;
+  tax_rate_bp: number;
+  tax_inclusive: boolean;
+  invoiced: boolean;
+}
+
+export interface JobMaterialInput {
+  item_id: number | null;
+  description: string;
+  quantity: string;
+  unit_price_minor: number;
+  tax_rate_name: string;
+  tax_rate_bp: number;
+  tax_inclusive: boolean;
+}
+
+export interface JobDetail {
+  job: Job;
+  time_entries: TimeEntry[];
+  materials: JobMaterial[];
+  labour_total_minor: number;
+  materials_total_minor: number;
+}

@@ -7,6 +7,10 @@ import type {
   InvoiceRow,
   Item,
   ItemInput,
+  Job,
+  JobDetail,
+  JobInput,
+  JobMaterialInput,
   LineInput,
   Payment,
   QuoteDetail,
@@ -14,6 +18,7 @@ import type {
   Settings,
   StockMovement,
   TaxRate,
+  TimeEntryInput,
 } from "@/lib/types";
 
 /**
@@ -90,4 +95,18 @@ export const ipc = {
     invoke<void>("set_quote_status", { id, status }),
   deleteQuote: (id: number) => invoke<void>("delete_quote", { id }),
   convertQuoteToInvoice: (id: number) => invoke<number>("convert_quote_to_invoice", { id }),
+
+  // jobs + timekeeping
+  listJobs: () => invoke<Job[]>("list_jobs"),
+  getJob: (id: number) => invoke<JobDetail | null>("get_job", { id }),
+  createJob: (input: JobInput) => invoke<number>("create_job", { input }),
+  setJobStatus: (id: number, status: string) => invoke<void>("set_job_status", { id, status }),
+  deleteJob: (id: number) => invoke<void>("delete_job", { id }),
+  addTimeEntry: (jobId: number, entry: TimeEntryInput) =>
+    invoke<number>("add_time_entry", { jobId, entry }),
+  addJobMaterial: (jobId: number, material: JobMaterialInput) =>
+    invoke<number>("add_job_material", { jobId, material }),
+  deleteTimeEntry: (id: number) => invoke<void>("delete_time_entry", { id }),
+  deleteJobMaterial: (id: number) => invoke<void>("delete_job_material", { id }),
+  invoiceJob: (id: number) => invoke<number>("invoice_job", { id }),
 };

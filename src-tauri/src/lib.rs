@@ -66,7 +66,18 @@ pub fn run() {
             commands::quoting::create_quote,
             commands::quoting::set_quote_status,
             commands::quoting::delete_quote,
-            commands::quoting::convert_quote_to_invoice
+            commands::quoting::convert_quote_to_invoice,
+            // jobs + timekeeping
+            commands::jobs::list_jobs,
+            commands::jobs::get_job,
+            commands::jobs::create_job,
+            commands::jobs::set_job_status,
+            commands::jobs::delete_job,
+            commands::jobs::add_time_entry,
+            commands::jobs::add_job_material,
+            commands::jobs::delete_time_entry,
+            commands::jobs::delete_job_material,
+            commands::jobs::invoice_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
