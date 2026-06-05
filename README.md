@@ -4,8 +4,9 @@ A **free, open-source desktop app** that gives any small business one place to r
 customers, catalog, stock, quotes, invoices, payments — with **all data on your own machine**. No
 subscriptions, no cloud, works fully offline.
 
-> Status: **early but real.** The full money-in vertical works end to end and is property-tested.
-> See [Roadmap](#roadmap) for what's next.
+> Status: **v1 complete & tested.** Customers, catalog, quotes, jobs/timekeeping, invoices, payments,
+> PDF export, and the dashboard all work end to end — **66 tests** (money/tax/inventory property-tested,
+> every screen accessibility-tested). See [Roadmap](#roadmap) for what's next.
 
 ## What it does today
 
@@ -14,10 +15,15 @@ subscriptions, no cloud, works fully offline.
 - **Customers** — searchable records.
 - **Catalog & inventory** — products (with tracked stock) and services; an **append-only stock ledger**
   with low-stock alerts.
+- **Quotes** — estimates with the same exact tax; send → accept; **convert a quote into an invoice** in
+  one click.
+- **Jobs & timekeeping** — track time (hours × rate) and materials against a job, then **create an invoice
+  from the job** (labour + materials) in one step.
 - **Invoices** — build from line items, with **exact, per-line tax** (inclusive or exclusive, multi-rate).
   Issuing an invoice assigns a **gapless number**, **freezes a snapshot**, and **decrements stock once**;
   issued invoices are immutable (correct via **void + reissue**).
 - **Payments** — record partial/full payments; status flows unpaid → part-paid → paid with a live balance.
+- **PDF export** — branded, offline invoice & quote PDFs (Typst with embedded fonts — identical on every OS).
 - **Dashboard** — money owed, invoice counts, low stock, recent activity.
 - **Backup & restore** — your data is a single SQLite file; one-click safe backup (`VACUUM INTO`) and
   integrity-checked restore.
@@ -66,10 +72,10 @@ export a copy, and **Restore** to load one. See [docs/INSTALL.md](docs/INSTALL.m
 
 Built on a general core designed to grow Odoo-style, one module at a time. Not yet implemented:
 
-- **Quotes** and **Jobs / timekeeping** screens (the domain + plan exist; UIs pending).
-- **PDF export** of quotes/invoices (planned via Typst).
-- **Email**, online card payments, scheduling, double-entry accounting, purchasing.
-- **Mobile + multi-user sync** (the architecture is local-first to allow this later).
+- **Email** sending, **online card payments** (Stripe), scheduling/dispatch.
+- **Double-entry accounting**, purchasing / supplier bills, recurring invoices.
+- **Mobile app + multi-user sync** (the architecture is local-first to allow this later).
+- **Code signing** for distribution (the release CI is already wired for it).
 
 ## Licence
 
