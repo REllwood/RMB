@@ -1,0 +1,14 @@
+[package]
+name = "rmb-data"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RMB persistence layer: sqlx repositories over a local SQLite database"
+
+[dependencies]
+rmb-domain = { path = "../rmb-domain" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# sqlx + tokio are added in Phase B (data foundation).

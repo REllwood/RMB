@@ -1,0 +1,19 @@
+# RMB — Cargo workspace
+# crates/rmb-domain : pure business logic (no Tauri, no sqlx) — fully unit-testable
+# crates/rmb-data   : persistence layer (sqlx repositories) — depends on rmb-domain
+# src-tauri         : thin Tauri command/adapter layer + app setup
+[workspace]
+members = ["crates/rmb-domain", "crates/rmb-data", "src-tauri"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+authors = ["RMB contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rust_decimal = "1.42"

@@ -1,0 +1,37 @@
+# Dependencies
+/node_modules
+**/node_modules
+
+# Build output
+/dist
+dist-ssr
+**/target
+
+# Local databases / app data
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Env & secrets
+.env
+.env.*
+*.local
+*.pem
+*.key
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Playwright
+/test-results
+/playwright-report
+/e2e/.cache
+
+# Forge planning trail (internal; remove this line to version the trail)
+/.forge/
+
+# NOTE: proptest-regressions/ is intentionally NOT ignored (commit shrunk counterexamples).

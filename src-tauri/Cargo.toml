@@ -1,0 +1,24 @@
+[package]
+name = "rmb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RMB — open-source business manager for small & home businesses"
+
+[lib]
+# The `_lib` suffix keeps the lib name unique from the bin name (a Windows quirk:
+# https://github.com/rust-lang/cargo/issues/8519).
+name = "rmb_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+rmb-domain = { path = "../crates/rmb-domain" }
+rmb-data = { path = "../crates/rmb-data" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

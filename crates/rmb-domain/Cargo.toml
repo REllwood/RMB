@@ -1,0 +1,15 @@
+[package]
+name = "rmb-domain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RMB pure domain logic: money, tax, documents, inventory (no I/O, no framework)"
+
+[dependencies]
+serde = { workspace = true }
+rust_decimal = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.11"
