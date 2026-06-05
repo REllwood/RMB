@@ -105,7 +105,10 @@ function InvoiceCreate({ onCreated }: { onCreated: (id: number) => void }) {
   const [lines, setLines] = useState<EditLine[]>([{ description: "", quantity: "1", price: "0.00", taxIdx: 0 }]);
 
   const taxes = taxQ.data ?? [];
-  const netPreview = lines.reduce((sum, l) => sum + (parseMoney(l.price) ?? 0) * (Number(l.quantity) || 0), 0);
+  const netPreview = lines.reduce(
+    (sum, l) => sum + Math.round((parseMoney(l.price) ?? 0) * (Number(l.quantity) || 0)),
+    0,
+  );
   const money = useMoneyFormat();
 
   function setLine(i: number, patch: Partial<EditLine>) {
@@ -199,7 +202,7 @@ function InvoiceCreate({ onCreated }: { onCreated: (id: number) => void }) {
           <Button variant="outline" size="sm" onClick={() => setLines((ls) => [...ls, { description: "", quantity: "1", price: "0.00", taxIdx: 0 }])}>
             Add line
           </Button>
-          <p className="text-sm text-muted-foreground">Subtotal (excl. tax): <span className="font-medium text-foreground">{money(netPreview)}</span></p>
+          <p className="text-sm text-muted-foreground">Approx. subtotal (excl. tax): <span className="font-medium text-foreground">{money(netPreview)}</span></p>
         </div>
 
         <Field label="Notes">
@@ -290,7 +293,9 @@ function InvoiceDetailView({ id }: { id: number }) {
             {(invoice.status === "issued" || invoice.status === "part_paid") && (
               <>
                 <Button onClick={onPay} disabled={pay.isPending}>Record payment</Button>
-                <Button variant="outline" onClick={onVoid} disabled={voidMut.isPending}>Void</Button>
+                {amount_paid_minor === 0 && (
+                  <Button variant="outline" onClick={onVoid} disabled={voidMut.isPending}>Void</Button>
+                )}
               </>
             )}
           </div>

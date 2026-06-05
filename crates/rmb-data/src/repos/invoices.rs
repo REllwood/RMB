@@ -3,7 +3,7 @@
 //! Drafts are editable and store computed line/total breakdowns. **Issuing** an invoice, in one
 //! transaction: assigns the next gapless number, freezes business + customer snapshots, decrements
 //! tracked-product stock exactly once, and flips status to `issued`. Issued invoices are immutable —
-//! correct via **void** (which reverses stock and unallocates payments).
+//! correct via **void** (reverses stock; allowed only while the invoice is unpaid).
 
 use std::str::FromStr;
 
@@ -81,6 +81,20 @@ fn to_doc_line(l: &LineInput) -> Result<DocumentLine, DataError> {
     ))
 }
 
+/// Quantity for a tracked-product stock movement: must be a **whole, non-negative** number.
+/// Tracked stock is counted in whole units, so fractional/negative quantities are rejected
+/// rather than silently rounded (which would desync stock from what was billed).
+fn tracked_qty(qty_str: &str) -> Result<i64, DataError> {
+    let qty = Decimal::from_str(qty_str.trim())
+        .map_err(|e| DataError::Other(format!("invalid quantity '{qty_str}': {e}")))?;
+    if qty < Decimal::ZERO || qty.fract() != Decimal::ZERO {
+        return Err(DataError::Other(format!(
+            "a tracked product line needs a whole, non-negative quantity (got {qty})"
+        )));
+    }
+    Ok(qty.to_i64().unwrap_or(0))
+}
+
 /// Create a draft invoice from line inputs (computes + stores line/total breakdowns).
 pub async fn create_draft(
     db: &Db,
@@ -142,14 +156,26 @@ pub async fn create_draft(
 pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = db.begin().await?;
 
-    let row =
-        sqlx::query_as::<_, (String, i64)>("SELECT status, customer_id FROM invoice WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let (status, customer_id) = row.ok_or_else(|| DataError::Other("invoice not found".into()))?;
+    let row = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT status, customer_id, total_minor FROM invoice WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (status, customer_id, total_minor) =
+        row.ok_or_else(|| DataError::Other("invoice not found".into()))?;
     if status != "draft" {
         return Err(DataError::Other("only draft invoices can be issued".into()));
+    }
+    let line_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invoice_line WHERE invoice_id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if line_count == 0 {
+        return Err(DataError::Other(
+            "cannot issue an invoice with no lines".into(),
+        ));
     }
 
     // Gapless number from the settings counter (read + increment in-transaction).
@@ -199,10 +225,7 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
                 .fetch_optional(&mut *tx)
                 .await?;
             if tracked == Some(true) {
-                let qty = Decimal::from_str(qty_str.trim())
-                    .ok()
-                    .and_then(|d| d.round().to_i64())
-                    .unwrap_or(0);
+                let qty = tracked_qty(&qty_str)?;
                 if qty != 0 {
                     items::apply_movement(
                         &mut tx,
@@ -219,10 +242,12 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
         }
     }
 
+    let new_status = payment_status(Money::from_minor(total_minor), Money::ZERO).as_db();
     sqlx::query(
-        "UPDATE invoice SET status = 'issued', number = ?, issue_date = date('now'), \
+        "UPDATE invoice SET status = ?, number = ?, issue_date = date('now'), \
          issued_at = datetime('now'), business_snapshot = ?, customer_snapshot = ? WHERE id = ?",
     )
+    .bind(new_status)
     .bind(&number)
     .bind(&business_snapshot)
     .bind(&customer_snapshot)
@@ -234,7 +259,9 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Void an issued invoice: reverse stock and unallocate payments. Number is kept (never deleted).
+/// Void an issued, **unpaid** invoice: reverse stock. The number is kept (never deleted). Invoices
+/// with recorded payments cannot be voided (refunds/credit notes are a later feature) — this keeps
+/// the cash trail intact.
 pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = db.begin().await?;
     let status: Option<String> = sqlx::query_scalar("SELECT status FROM invoice WHERE id = ?")
@@ -245,6 +272,17 @@ pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
     if status == "draft" || status == "void" {
         return Err(DataError::Other(
             "only issued invoices can be voided".into(),
+        ));
+    }
+    let allocated: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM payment_allocation WHERE invoice_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if allocated > 0 {
+        return Err(DataError::Other(
+            "cannot void an invoice with recorded payments (refunds/credit notes are a later feature)".into(),
         ));
     }
 
@@ -261,10 +299,7 @@ pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
                 .fetch_optional(&mut *tx)
                 .await?;
             if tracked == Some(true) {
-                let qty = Decimal::from_str(qty_str.trim())
-                    .ok()
-                    .and_then(|d| d.round().to_i64())
-                    .unwrap_or(0);
+                let qty = tracked_qty(&qty_str)?;
                 if qty != 0 {
                     items::apply_movement(
                         &mut tx,
@@ -280,10 +315,6 @@ pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
             }
         }
     }
-    sqlx::query("DELETE FROM payment_allocation WHERE invoice_id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
     sqlx::query("UPDATE invoice SET status = 'void', voided_at = datetime('now') WHERE id = ?")
         .bind(id)
         .execute(&mut *tx)
@@ -450,6 +481,37 @@ mod tests {
         assert_eq!(detail.invoice.status, "void");
         assert_eq!(detail.invoice.number.as_deref(), Some("INV-0001")); // number kept
         assert_eq!(items::get(&pool, item).await?.unwrap().qty_on_hand, 5); // restored
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn fractional_tracked_quantity_is_rejected_at_issue(pool: Db) -> Result<(), DataError> {
+        let customer = seed_customer(&pool).await;
+        let item = items::create(
+            &pool,
+            &items::ItemInput {
+                kind: "product".into(),
+                name: "Widget".into(),
+                sku: "W".into(),
+                unit: "each".into(),
+                default_price_minor: 1000,
+                default_tax_rate_id: None,
+                tracked: true,
+                reorder_point: None,
+            },
+        )
+        .await?;
+        items::adjust_stock(&pool, item, 10, "init").await?;
+        let inv = create_draft(
+            &pool,
+            customer,
+            &[line(Some(item), "2.5", 1000, 0)],
+            None,
+            "",
+        )
+        .await?;
+        assert!(issue(&pool, inv).await.is_err()); // fractional qty on a tracked product
+        assert_eq!(items::get(&pool, item).await?.unwrap().qty_on_hand, 10); // tx rolled back
         Ok(())
     }
 }

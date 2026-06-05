@@ -96,7 +96,10 @@ impl InvoiceStatus {
 /// Derive the payment-based status of an *issued* invoice from its total and amount paid.
 /// (Draft and Void are explicit states handled before calling this.)
 pub fn payment_status(total: Money, paid: Money) -> InvoiceStatus {
-    if !paid.is_positive() {
+    if !total.is_positive() {
+        // A zero (or non-positive) total is considered settled on issue.
+        InvoiceStatus::Paid
+    } else if !paid.is_positive() {
         InvoiceStatus::Issued
     } else if paid >= total {
         InvoiceStatus::Paid
@@ -137,6 +140,10 @@ mod tests {
     fn payment_derived_status_and_balance() {
         let total = Money::from_minor(10000);
         assert_eq!(payment_status(total, Money::ZERO), InvoiceStatus::Issued);
+        assert_eq!(
+            payment_status(Money::ZERO, Money::ZERO),
+            InvoiceStatus::Paid
+        ); // zero-total settled
         assert_eq!(
             payment_status(total, Money::from_minor(5000)),
             InvoiceStatus::PartPaid

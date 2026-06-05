@@ -4,9 +4,19 @@ import { useIpcQuery } from "@/lib/useIpc";
 
 /** Parse a user-entered major-unit amount (e.g. "12.50") into integer minor units. */
 export function parseMoney(input: string, scale = 2): number | null {
-  const cleaned = input.replace(/[^0-9.-]/g, "").trim();
-  if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
-  const value = Number(cleaned);
+  let s = input.trim().replace(/\s/g, "");
+  if (s.includes(",") && s.includes(".")) {
+    // Both separators present → treat "," as the thousands separator.
+    s = s.replace(/,/g, "");
+  } else if (s.includes(",")) {
+    const oneComma = s.indexOf(",") === s.lastIndexOf(",");
+    const decimals = s.slice(s.lastIndexOf(",") + 1).length;
+    // A single comma followed by 1–2 digits is a decimal comma ("1,50"); otherwise thousands.
+    s = oneComma && decimals <= 2 ? s.replace(",", ".") : s.replace(/,/g, "");
+  }
+  s = s.replace(/[^0-9.-]/g, "");
+  if (s === "" || s === "-" || s === ".") return null;
+  const value = Number(s);
   if (!Number.isFinite(value)) return null;
   return Math.round(value * 10 ** scale);
 }

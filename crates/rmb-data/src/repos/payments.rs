@@ -51,7 +51,12 @@ pub async fn record_payment(
     .fetch_one(&mut *tx)
     .await?;
     let outstanding = (total - allocated).max(0);
-    let alloc = amount_minor.min(outstanding);
+    if outstanding <= 0 {
+        return Err(DataError::Other(
+            "invoice has no outstanding balance".into(),
+        ));
+    }
+    let alloc = amount_minor.min(outstanding); // clamp overpayment; always > 0 here
 
     let payment_id = sqlx::query(
         "INSERT INTO payment (customer_id, amount_minor, method, reference) VALUES (?, ?, ?, ?)",
@@ -64,19 +69,24 @@ pub async fn record_payment(
     .await?
     .last_insert_rowid();
 
-    if alloc > 0 {
-        sqlx::query("INSERT INTO payment_allocation (payment_id, invoice_id, amount_minor) VALUES (?, ?, ?)")
-            .bind(payment_id)
-            .bind(invoice_id)
-            .bind(alloc)
-            .execute(&mut *tx)
-            .await?;
-    }
+    sqlx::query(
+        "INSERT INTO payment_allocation (payment_id, invoice_id, amount_minor) VALUES (?, ?, ?)",
+    )
+    .bind(payment_id)
+    .bind(invoice_id)
+    .bind(alloc)
+    .execute(&mut *tx)
+    .await?;
 
-    let new_status = payment_status(
-        Money::from_minor(total),
-        Money::from_minor(allocated + alloc),
-    );
+    // Derive status from the authoritative SUM *after* inserting (avoids stale-read drift under
+    // concurrent payments — SQLite serializes write transactions).
+    let total_allocated: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM payment_allocation WHERE invoice_id = ?",
+    )
+    .bind(invoice_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let new_status = payment_status(Money::from_minor(total), Money::from_minor(total_allocated));
     sqlx::query("UPDATE invoice SET status = ? WHERE id = ? AND status != 'void'")
         .bind(new_status.as_db())
         .bind(invoice_id)
