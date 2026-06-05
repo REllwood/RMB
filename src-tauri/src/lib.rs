@@ -28,7 +28,37 @@ pub fn run() {
             commands::get_meta,
             commands::set_meta,
             commands::backup::backup_database,
-            commands::backup::restore_database
+            commands::backup::restore_database,
+            // settings + tax
+            commands::settings::get_settings,
+            commands::settings::update_settings,
+            commands::settings::list_tax_rates,
+            commands::settings::create_tax_rate,
+            commands::settings::update_tax_rate,
+            commands::settings::archive_tax_rate,
+            commands::settings::apply_tax_preset,
+            // customers
+            commands::customers::list_customers,
+            commands::customers::get_customer,
+            commands::customers::create_customer,
+            commands::customers::update_customer,
+            commands::customers::delete_customer,
+            // catalog + stock
+            commands::catalog::list_items,
+            commands::catalog::get_item,
+            commands::catalog::create_item,
+            commands::catalog::update_item,
+            commands::catalog::delete_item,
+            commands::catalog::adjust_stock,
+            commands::catalog::item_movements,
+            // invoices + payments
+            commands::invoicing::list_invoices,
+            commands::invoicing::get_invoice,
+            commands::invoicing::create_invoice,
+            commands::invoicing::issue_invoice,
+            commands::invoicing::void_invoice,
+            commands::invoicing::record_payment,
+            commands::invoicing::invoice_payments
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

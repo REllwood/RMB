@@ -3,6 +3,10 @@
 //! in the domain/data crates so it stays unit-testable without a webview.
 
 pub mod backup;
+pub mod catalog;
+pub mod customers;
+pub mod invoicing;
+pub mod settings;
 
 use rmb_data::db::Db;
 use rmb_data::repos::meta;
