@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 rmb-domain = { path = "../crates/rmb-domain" }
 rmb-data = { path = "../crates/rmb-data" }
 serde = { workspace = true }

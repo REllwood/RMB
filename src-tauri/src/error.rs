@@ -1,8 +1,7 @@
 //! Application-level error type returned by Tauri commands.
 //!
 //! Commands return `Result<T, AppError>`; `AppError` serializes to a plain string so the
-//! React frontend receives a readable message. Domain/data error variants are added as
-//! those layers come online (Phase B onward).
+//! React frontend receives a readable message. Data-layer errors convert in automatically.
 
 use serde::{Serialize, Serializer};
 use thiserror::Error;
@@ -11,6 +10,8 @@ use thiserror::Error;
 pub enum AppError {
     #[error("{0}")]
     Message(String),
+    #[error("{0}")]
+    Data(String),
 }
 
 impl From<String> for AppError {
@@ -22,6 +23,12 @@ impl From<String> for AppError {
 impl From<&str> for AppError {
     fn from(value: &str) -> Self {
         AppError::Message(value.to_string())
+    }
+}
+
+impl From<rmb_data::DataError> for AppError {
+    fn from(value: rmb_data::DataError) -> Self {
+        AppError::Data(value.to_string())
     }
 }
 
