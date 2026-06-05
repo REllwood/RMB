@@ -8,6 +8,7 @@ use tauri::Manager;
 
 mod commands;
 mod error;
+mod pdf;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -77,7 +78,10 @@ pub fn run() {
             commands::jobs::add_job_material,
             commands::jobs::delete_time_entry,
             commands::jobs::delete_job_material,
-            commands::jobs::invoice_job
+            commands::jobs::invoice_job,
+            // pdf
+            commands::pdf::export_invoice_pdf,
+            commands::pdf::export_quote_pdf
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

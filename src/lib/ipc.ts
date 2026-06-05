@@ -109,4 +109,8 @@ export const ipc = {
   deleteTimeEntry: (id: number) => invoke<void>("delete_time_entry", { id }),
   deleteJobMaterial: (id: number) => invoke<void>("delete_job_material", { id }),
   invoiceJob: (id: number) => invoke<number>("invoice_job", { id }),
+
+  // pdf export (dest path chosen via the dialog plugin in the UI)
+  exportInvoicePdf: (id: number, dest: string) => invoke<void>("export_invoice_pdf", { id, dest }),
+  exportQuotePdf: (id: number, dest: string) => invoke<void>("export_quote_pdf", { id, dest }),
 };

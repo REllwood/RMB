@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod customers;
 pub mod invoicing;
 pub mod jobs;
+pub mod pdf;
 pub mod quoting;
 pub mod settings;
 

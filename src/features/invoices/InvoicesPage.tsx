@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -246,6 +247,13 @@ function InvoiceDetailView({ id }: { id: number }) {
     const method = (window.prompt("Method (cash, card, transfer):", "bank transfer") ?? "").trim();
     if (amount && amount > 0) pay.mutate({ amount, method });
   }
+  async function onExportPdf() {
+    const path = await save({
+      defaultPath: `${invoice.number ?? `invoice-${invoice.id}`}.pdf`,
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (path) await ipc.exportInvoicePdf(invoice.id, path);
+  }
 
   return (
     <div className="space-y-4">
@@ -289,6 +297,7 @@ function InvoiceDetailView({ id }: { id: number }) {
           </div>
 
           <div className="flex flex-wrap gap-2 border-t pt-4">
+            <Button variant="outline" onClick={onExportPdf}>Export PDF</Button>
             {invoice.status === "draft" && <Button onClick={onIssue} disabled={issue.isPending}>Issue invoice</Button>}
             {(invoice.status === "issued" || invoice.status === "part_paid") && (
               <>

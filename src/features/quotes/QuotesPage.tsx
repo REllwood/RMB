@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -233,6 +234,14 @@ function QuoteDetailView({ id }: { id: number }) {
 
   const { quote, lines } = q.data;
 
+  async function onExportPdf() {
+    const path = await save({
+      defaultPath: `${quote.number ?? `quote-${quote.id}`}.pdf`,
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (path) await ipc.exportQuotePdf(quote.id, path);
+  }
+
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
@@ -268,6 +277,7 @@ function QuoteDetailView({ id }: { id: number }) {
         </div>
 
         <div className="flex flex-wrap gap-2 border-t pt-4">
+          <Button variant="outline" onClick={onExportPdf}>Export PDF</Button>
           {quote.status === "draft" && <Button onClick={() => setStatus.mutate("sent")}>Mark sent</Button>}
           {quote.status === "sent" && (
             <>
