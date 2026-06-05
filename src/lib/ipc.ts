@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Customer,
   CustomerInput,
+  DashboardSummary,
   InvoiceDetail,
   InvoiceRow,
   Item,
@@ -70,4 +71,7 @@ export const ipc = {
   recordPayment: (invoiceId: number, amountMinor: number, method: string, reference: string) =>
     invoke<number>("record_payment", { invoiceId, amountMinor, method, reference }),
   invoicePayments: (invoiceId: number) => invoke<Payment[]>("invoice_payments", { invoiceId }),
+
+  // dashboard
+  dashboardSummary: () => invoke<DashboardSummary>("dashboard_summary"),
 };

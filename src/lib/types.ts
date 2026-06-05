@@ -127,3 +127,18 @@ export interface Payment {
   method: string;
   reference: string;
 }
+
+export interface LowStockItem {
+  id: number;
+  name: string;
+  qty_on_hand: number;
+  reorder_point: number | null;
+}
+
+export interface DashboardSummary {
+  outstanding_minor: number;
+  draft_count: number;
+  unpaid_count: number;
+  paid_count: number;
+  low_stock: LowStockItem[];
+}

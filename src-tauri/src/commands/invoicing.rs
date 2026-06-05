@@ -1,11 +1,17 @@
 //! Invoice + payment commands.
 
 use rmb_data::db::Db;
+use rmb_data::repos::dashboard::{self, DashboardSummary};
 use rmb_data::repos::invoices::{self, InvoiceDetail, InvoiceRow, LineInput};
 use rmb_data::repos::payments::{self, Payment};
 use tauri::State;
 
 use crate::error::AppError;
+
+#[tauri::command]
+pub async fn dashboard_summary(db: State<'_, Db>) -> Result<DashboardSummary, AppError> {
+    Ok(dashboard::summary(&db).await?)
+}
 
 #[tauri::command]
 pub async fn list_invoices(db: State<'_, Db>) -> Result<Vec<InvoiceRow>, AppError> {
@@ -52,6 +58,9 @@ pub async fn record_payment(
 }
 
 #[tauri::command]
-pub async fn invoice_payments(db: State<'_, Db>, invoice_id: i64) -> Result<Vec<Payment>, AppError> {
+pub async fn invoice_payments(
+    db: State<'_, Db>,
+    invoice_id: i64,
+) -> Result<Vec<Payment>, AppError> {
     Ok(payments::list_for_invoice(&db, invoice_id).await?)
 }

@@ -2,6 +2,7 @@
 //! interpolation). Each module owns one aggregate; pure rules live in `rmb-domain`.
 
 pub mod customers;
+pub mod dashboard;
 pub mod invoices;
 pub mod items;
 pub mod meta;
