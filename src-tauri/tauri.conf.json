@@ -20,12 +20,17 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "nsis"],
+    "category": "Business",
+    "shortDescription": "Open-source business manager for small & home businesses",
+    "longDescription": "Free, offline desktop app to manage customers, catalog, stock, invoices, and payments — your data on your own machine.",
+    "macOS": { "minimumSystemVersion": "10.15" },
+    "windows": { "nsis": { "installMode": "currentUser" } },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
