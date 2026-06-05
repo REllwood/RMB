@@ -142,3 +142,24 @@ export interface DashboardSummary {
   paid_count: number;
   low_stock: LowStockItem[];
 }
+
+export interface QuoteRow {
+  id: number;
+  customer_id: number;
+  number: string | null;
+  status: string;
+  valid_until: string | null;
+  subtotal_minor: number;
+  tax_minor: number;
+  total_minor: number;
+  notes: string;
+  converted_invoice_id: number | null;
+  created_at: string;
+}
+
+export type QuoteLineRow = InvoiceLineRow;
+
+export interface QuoteDetail {
+  quote: QuoteRow;
+  lines: QuoteLineRow[];
+}

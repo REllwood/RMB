@@ -6,6 +6,7 @@ pub mod backup;
 pub mod catalog;
 pub mod customers;
 pub mod invoicing;
+pub mod quoting;
 pub mod settings;
 
 use rmb_data::db::Db;

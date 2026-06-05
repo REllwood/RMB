@@ -70,7 +70,7 @@ pub struct InvoiceDetail {
     pub amount_paid_minor: i64,
 }
 
-fn to_doc_line(l: &LineInput) -> Result<DocumentLine, DataError> {
+pub(crate) fn to_doc_line(l: &LineInput) -> Result<DocumentLine, DataError> {
     let qty = Decimal::from_str(l.quantity.trim())
         .map_err(|e| DataError::Other(format!("invalid quantity '{}': {e}", l.quantity)))?;
     Ok(DocumentLine::new(

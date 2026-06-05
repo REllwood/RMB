@@ -59,7 +59,14 @@ pub fn run() {
             commands::invoicing::void_invoice,
             commands::invoicing::record_payment,
             commands::invoicing::invoice_payments,
-            commands::invoicing::dashboard_summary
+            commands::invoicing::dashboard_summary,
+            // quotes
+            commands::quoting::list_quotes,
+            commands::quoting::get_quote,
+            commands::quoting::create_quote,
+            commands::quoting::set_quote_status,
+            commands::quoting::delete_quote,
+            commands::quoting::convert_quote_to_invoice
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

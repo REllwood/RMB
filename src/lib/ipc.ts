@@ -9,6 +9,8 @@ import type {
   ItemInput,
   LineInput,
   Payment,
+  QuoteDetail,
+  QuoteRow,
   Settings,
   StockMovement,
   TaxRate,
@@ -74,4 +76,18 @@ export const ipc = {
 
   // dashboard
   dashboardSummary: () => invoke<DashboardSummary>("dashboard_summary"),
+
+  // quotes
+  listQuotes: () => invoke<QuoteRow[]>("list_quotes"),
+  getQuote: (id: number) => invoke<QuoteDetail | null>("get_quote", { id }),
+  createQuote: (
+    customerId: number,
+    lines: LineInput[],
+    validUntil: string | null,
+    notes: string,
+  ) => invoke<number>("create_quote", { customerId, lines, validUntil, notes }),
+  setQuoteStatus: (id: number, status: string) =>
+    invoke<void>("set_quote_status", { id, status }),
+  deleteQuote: (id: number) => invoke<void>("delete_quote", { id }),
+  convertQuoteToInvoice: (id: number) => invoke<number>("convert_quote_to_invoice", { id }),
 };

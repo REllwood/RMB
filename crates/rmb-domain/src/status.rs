@@ -40,6 +40,29 @@ impl QuoteStatus {
         use QuoteStatus::*;
         matches!(self, Declined | Expired | Converted)
     }
+
+    pub fn as_db(self) -> &'static str {
+        match self {
+            QuoteStatus::Draft => "draft",
+            QuoteStatus::Sent => "sent",
+            QuoteStatus::Accepted => "accepted",
+            QuoteStatus::Declined => "declined",
+            QuoteStatus::Expired => "expired",
+            QuoteStatus::Converted => "converted",
+        }
+    }
+
+    pub fn from_db(s: &str) -> Option<Self> {
+        match s {
+            "draft" => Some(QuoteStatus::Draft),
+            "sent" => Some(QuoteStatus::Sent),
+            "accepted" => Some(QuoteStatus::Accepted),
+            "declined" => Some(QuoteStatus::Declined),
+            "expired" => Some(QuoteStatus::Expired),
+            "converted" => Some(QuoteStatus::Converted),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

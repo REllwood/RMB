@@ -7,4 +7,5 @@ pub mod invoices;
 pub mod items;
 pub mod meta;
 pub mod payments;
+pub mod quotes;
 pub mod settings;
