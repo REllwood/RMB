@@ -42,6 +42,12 @@ export function SettingsPage() {
   }, [settingsQ.data]);
 
   const saveMut = useIpcMutation((v: Settings) => ipc.updateSettings(v), [["settings"]]);
+  const setLogoMut = useIpcMutation((src: string) => ipc.setLogo(src), [["settings"]], {
+    successMessage: "Logo updated — it now appears on your PDFs",
+  });
+  const clearLogoMut = useIpcMutation(() => ipc.clearLogo(), [["settings"]], {
+    successMessage: "Logo removed",
+  });
   const presetMut = useIpcMutation((c: string) => ipc.applyTaxPreset(c), [["tax-rates"]]);
   const addTaxMut = useIpcMutation(
     (r: { name: string; bp: number; inc: boolean }) => ipc.createTaxRate(r.name, r.bp, r.inc),
@@ -86,6 +92,21 @@ export function SettingsPage() {
     void addTaxMut.mutateAsync({ name: taxName.trim(), bp: Math.round(pct * 100), inc: form?.prices_tax_inclusive ?? false });
     setTaxName("");
     setTaxPct("");
+  }
+
+  async function onChooseLogo() {
+    const path = await open({
+      multiple: false,
+      filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg"] }],
+    });
+    if (typeof path === "string") {
+      const stored = await setLogoMut.mutateAsync(path);
+      set("logo_path", stored);
+    }
+  }
+  async function onClearLogo() {
+    await clearLogoMut.mutateAsync(undefined);
+    set("logo_path", null);
   }
 
   return (
@@ -136,6 +157,24 @@ export function SettingsPage() {
             />
             Prices include tax by default
           </label>
+          <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
+            <span className="text-sm font-medium">Logo</span>
+            {form.logo_path ? (
+              <>
+                <span className="max-w-56 truncate text-sm text-muted-foreground">
+                  {form.logo_path.split(/[\\/]/).pop()}
+                </span>
+                <Button variant="outline" size="sm" onClick={onClearLogo} disabled={clearLogoMut.isPending}>
+                  Remove
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline" size="sm" onClick={onChooseLogo} disabled={setLogoMut.isPending}>
+                Choose logo…
+              </Button>
+            )}
+            <span className="text-xs text-muted-foreground">PNG or JPEG — shown on your quote &amp; invoice PDFs</span>
+          </div>
         </CardContent>
         <CardContent className="flex items-center gap-3 border-t pt-4">
           <Button onClick={onSave} disabled={saveMut.isPending}>

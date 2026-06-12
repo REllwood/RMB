@@ -46,6 +46,8 @@ export const ipc = {
     invoke<void>("update_tax_rate", { id, name, rateBp, inclusive }),
   archiveTaxRate: (id: number) => invoke<void>("archive_tax_rate", { id }),
   applyTaxPreset: (country: string) => invoke<void>("apply_tax_preset", { country }),
+  setLogo: (src: string) => invoke<string>("set_logo", { src }),
+  clearLogo: () => invoke<void>("clear_logo"),
 
   // customers
   listCustomers: (search?: string) => invoke<Customer[]>("list_customers", { search }),

@@ -43,8 +43,26 @@ fn customer_lines(c: Option<&customers::Customer>) -> Vec<String> {
     }
 }
 
-fn write_pdf(json_data: &str, dest: &str) -> Result<(), AppError> {
-    let bytes = pdf::render(json_data).map_err(AppError::Message)?;
+/// Load the configured logo as (bytes, typst format). Any problem (moved file, odd extension)
+/// just means an unbranded PDF — exporting must never fail because of the logo.
+fn load_logo(s: &Settings) -> Option<(Vec<u8>, &'static str)> {
+    let path = s.logo_path.as_deref()?;
+    let format = match std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        _ => return None,
+    };
+    let bytes = std::fs::read(path).ok()?;
+    Some((bytes, format))
+}
+
+fn write_pdf(json_data: &str, logo: Option<(Vec<u8>, &str)>, dest: &str) -> Result<(), AppError> {
+    let bytes = pdf::render(json_data, logo).map_err(AppError::Message)?;
     std::fs::write(dest, bytes).map_err(|e| AppError::Message(e.to_string()))?;
     Ok(())
 }
@@ -117,7 +135,7 @@ pub async fn export_invoice_pdf(db: State<'_, Db>, id: i64, dest: String) -> Res
     })
     .to_string();
 
-    write_pdf(&data, &dest)
+    write_pdf(&data, load_logo(&s), &dest)
 }
 
 #[tauri::command]
@@ -178,5 +196,5 @@ pub async fn export_quote_pdf(db: State<'_, Db>, id: i64, dest: String) -> Resul
     })
     .to_string();
 
-    write_pdf(&data, &dest)
+    write_pdf(&data, load_logo(&s), &dest)
 }

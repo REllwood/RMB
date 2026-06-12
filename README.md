@@ -5,26 +5,33 @@ customers, catalog, stock, quotes, invoices, payments — with **all data on you
 subscriptions, no cloud, works fully offline.
 
 > Status: **v1 complete & tested.** Customers, catalog, quotes, jobs/timekeeping, invoices, payments,
-> PDF export, and the dashboard all work end to end — **68 tests** (money/tax/inventory property-tested,
+> PDF export, and the dashboard all work end to end — **73 tests** (money/tax/inventory property-tested,
 > every screen accessibility-tested). See [Roadmap](#roadmap) for what's next.
 
 ## What it does today
 
-- **Business setup** — your details, currency, and a **configurable tax engine** with one-click presets
-  for the UK (VAT), Australia / New Zealand (GST), Canada, and the US, plus custom rates.
-- **Customers** — searchable records.
+- **Business setup** — your details, **logo** (shown on PDFs), currency, and a **configurable tax
+  engine** with one-click presets for the UK (VAT), Australia / New Zealand (GST), Canada, and the US,
+  plus custom rates.
+- **Customers** — searchable records, each with its **full history**: every quote, job, and invoice in
+  one place.
 - **Catalog & inventory** — products (with tracked stock) and services; an **append-only stock ledger**
-  with low-stock alerts.
-- **Quotes** — estimates with the same exact tax; send → accept; **convert a quote into an invoice** in
-  one click.
-- **Jobs & timekeeping** — track time (hours × rate) and materials against a job, then **create an invoice
-  from the job** (labour + materials) in one step.
-- **Invoices** — build from line items, with **exact, per-line tax** (inclusive or exclusive, multi-rate).
-  Issuing an invoice assigns a **gapless number**, **freezes a snapshot**, and **decrements stock once**;
-  issued invoices are immutable (correct via **void + reissue**).
-- **Payments** — record partial/full payments; status flows unpaid → part-paid → paid with a live balance.
-- **PDF export** — branded, offline invoice & quote PDFs (Typst with embedded fonts — identical on every OS).
-- **Dashboard** — money owed, invoice counts, low stock, recent activity.
+  with low-stock alerts. Catalog items are **picked straight onto quotes, jobs, and invoices** (default
+  price + tax applied), so selling actually moves stock.
+- **Quotes** — estimates with the same exact tax; edit drafts, send → accept, then **convert into an
+  invoice or a job** in one click.
+- **Jobs & timekeeping** — track time (dated entries, hours × rate) and materials (from the catalog or
+  free-form) against a job, then **create an invoice from the job** in one step — billed work can't be
+  pulled twice.
+- **Invoices** — build from catalog items or free lines, with **exact, per-line tax** (inclusive or
+  exclusive, multi-rate), due dates, and **overdue** flags. Drafts are editable/deletable; **issuing**
+  assigns a **gapless number**, **freezes a snapshot**, and **decrements stock once**; issued invoices
+  are immutable (correct via **void + reissue**).
+- **Payments** — record partial/full payments with method + reference; status flows unpaid → part-paid
+  → paid with a live balance, and a mis-entered payment can be **removed** (status recalculates).
+- **PDF export** — branded (logo + business details), fully offline invoice & quote PDFs (Typst with
+  embedded fonts — identical on every OS).
+- **Dashboard** — money owed, **overdue count**, invoice counts, low stock, recent activity.
 - **Backup & restore** — your data is a single SQLite file; one-click safe backup (`VACUUM INTO`) and
   integrity-checked restore.
 
@@ -79,8 +86,7 @@ Built on a general core designed to grow Odoo-style, one module at a time. Not y
 
 ## Licence
 
-Intended licence: **GPL-3.0-or-later** (keeps the app and any derivatives free and open). All current
-dependencies are permissive (MIT/Apache/BSD) and compatible. The final `LICENSE` file is added at first
-public release.
+**GPL-3.0-or-later** — see [LICENSE](LICENSE). Keeps the app and any derivatives free and open. All
+dependencies are permissive (MIT/Apache/BSD) and compatible (verified with `cargo deny`).
 
 🤖 Built with [Claude Code](https://claude.com/claude-code) via the `forge` pipeline.

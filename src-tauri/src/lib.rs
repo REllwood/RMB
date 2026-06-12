@@ -38,6 +38,8 @@ pub fn run() {
             commands::settings::update_tax_rate,
             commands::settings::archive_tax_rate,
             commands::settings::apply_tax_preset,
+            commands::settings::set_logo,
+            commands::settings::clear_logo,
             // customers
             commands::customers::list_customers,
             commands::customers::get_customer,

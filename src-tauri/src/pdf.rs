@@ -1,13 +1,14 @@
 //! PDF generation via Typst — fully offline, using Typst's embedded default fonts so output is
 //! byte-identical across platforms. All money/dates are pre-formatted to strings in Rust.
 
-use typst::foundations::{Dict, IntoValue};
+use typst::foundations::{Bytes, Dict, IntoValue};
 use typst_as_lib::TypstEngine;
 
 const TEMPLATE: &str = include_str!("../assets/templates/document.typ");
 
-/// Render the document template with a JSON data string to PDF bytes.
-pub fn render(json_data: &str) -> Result<Vec<u8>, String> {
+/// Render the document template to PDF bytes. `logo` is optional raster bytes + Typst format
+/// name ("png" / "jpg") for the business logo in the header.
+pub fn render(json_data: &str, logo: Option<(Vec<u8>, &str)>) -> Result<Vec<u8>, String> {
     let engine = TypstEngine::builder()
         .main_file(TEMPLATE)
         .fonts(typst_assets::fonts())
@@ -15,6 +16,10 @@ pub fn render(json_data: &str) -> Result<Vec<u8>, String> {
 
     let mut inputs = Dict::new();
     inputs.insert("data".into(), json_data.into_value());
+    if let Some((bytes, format)) = logo {
+        inputs.insert("logo".into(), Bytes::new(bytes).into_value());
+        inputs.insert("logo_format".into(), format.into_value());
+    }
 
     let doc = engine
         .compile_with_input(inputs)
@@ -76,9 +81,15 @@ mod tests {
         })
         .to_string();
 
-        let pdf = render(&data).expect("render should succeed");
+        let pdf = render(&data, None).expect("render should succeed");
         assert!(pdf.starts_with(b"%PDF"), "output should be a PDF");
         assert!(pdf.len() > 1000, "pdf should have content");
+
+        // With a logo: still a valid PDF, and bigger than the unbranded one (image embedded).
+        let logo = include_bytes!("../assets/test-logo.png").to_vec();
+        let branded = render(&data, Some((logo, "png"))).expect("logo render should succeed");
+        assert!(branded.starts_with(b"%PDF"));
+        assert!(branded.len() > pdf.len(), "logo should add content");
     }
 
     #[test]

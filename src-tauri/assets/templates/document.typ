@@ -22,6 +22,10 @@
     #d.business_lines.map(l => [#l]).join(linebreak())
   ],
   align(right)[
+    #if "logo" in sys.inputs [
+      #image(sys.inputs.logo, format: sys.inputs.logo_format, height: 1.5cm)
+      #v(0.5em)
+    ]
     #text(20pt, weight: "bold")[#d.kind] #linebreak()
     #d.meta.map(l => [#l]).join(linebreak())
   ],
