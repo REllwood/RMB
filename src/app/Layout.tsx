@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Store, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -59,7 +59,15 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
       </a>
 
       <nav aria-label="Primary" className="flex flex-col gap-1 border-r bg-card p-3">
-        <div className="px-2 py-3 text-xl font-bold tracking-tight">RMB</div>
+        <div className="mb-2 flex items-center gap-2.5 px-2 py-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+            <Store className="size-5" aria-hidden />
+          </div>
+          <div className="leading-tight">
+            <div className="text-base font-bold tracking-tight">RMB</div>
+            <div className="text-[11px] text-muted-foreground">Business manager</div>
+          </div>
+        </div>
         {SECTIONS.map((section) => {
           const Icon = section.icon;
           const isActive = active === section.id;
@@ -97,8 +105,8 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
         </div>
       </nav>
 
-      <main id="main" ref={mainRef} tabIndex={-1} className="overflow-y-auto p-6 outline-none">
-        <div className="mx-auto max-w-5xl">{renderSection(active)}</div>
+      <main id="main" ref={mainRef} tabIndex={-1} className="overflow-y-auto p-6 outline-none lg:p-8">
+        <div className="mx-auto max-w-6xl">{renderSection(active)}</div>
       </main>
     </div>
   );

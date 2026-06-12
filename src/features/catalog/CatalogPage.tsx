@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Plus } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -6,8 +7,10 @@ import type { Item, ItemInput } from "@/lib/types";
 import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -40,22 +43,39 @@ const EMPTY: Draft = {
 export function CatalogPage() {
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [adjusting, setAdjusting] = useState<Item | null>(null);
+  const [deleting, setDeleting] = useState<Item | null>(null);
   const money = useMoneyFormat();
 
   const listQ = useIpcQuery(["items", search], () => ipc.listItems(search || undefined));
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
   const createMut = useIpcMutation((i: ItemInput) => ipc.createItem(i), [["items"]]);
-  const updateMut = useIpcMutation((v: { id: number; input: ItemInput }) => ipc.updateItem(v.id, v.input), [["items"]]);
-  const deleteMut = useIpcMutation((id: number) => ipc.deleteItem(id), [["items"]]);
-  const adjustMut = useIpcMutation(
-    (v: { id: number; delta: number }) => ipc.adjustStock(v.id, v.delta, "manual adjustment"),
+  const updateMut = useIpcMutation(
+    (v: { id: number; input: ItemInput }) => ipc.updateItem(v.id, v.input),
     [["items"]],
+  );
+  const deleteMut = useIpcMutation((id: number) => ipc.deleteItem(id), [["items"]], {
+    successMessage: "Item deleted",
+  });
+  const adjustMut = useIpcMutation(
+    (v: { id: number; delta: number; note: string }) => ipc.adjustStock(v.id, v.delta, v.note),
+    [["items"], ["dashboard"]],
+    { successMessage: "Stock adjusted" },
   );
 
   function startEdit(it: Item) {
     setDraft({
       id: it.id,
-      input: { kind: it.kind, name: it.name, sku: it.sku, unit: it.unit, default_price_minor: it.default_price_minor, default_tax_rate_id: it.default_tax_rate_id, tracked: it.tracked, reorder_point: it.reorder_point },
+      input: {
+        kind: it.kind,
+        name: it.name,
+        sku: it.sku,
+        unit: it.unit,
+        default_price_minor: it.default_price_minor,
+        default_tax_rate_id: it.default_tax_rate_id,
+        tracked: it.tracked,
+        reorder_point: it.reorder_point,
+      },
       price: minorToInput(it.default_price_minor),
     });
   }
@@ -66,21 +86,21 @@ export function CatalogPage() {
     else await updateMut.mutateAsync({ id: draft.id, input });
     setDraft(null);
   }
-  function onAdjust(it: Item) {
-    const raw = window.prompt(`Adjust stock for ${it.name} (e.g. 10 or -3):`, "0");
-    const delta = raw ? Number(raw) : NaN;
-    if (Number.isInteger(delta) && delta !== 0) adjustMut.mutate({ id: it.id, delta });
-  }
   function field<K extends keyof ItemInput>(key: K, value: ItemInput[K]) {
     setDraft((d) => (d ? { ...d, input: { ...d.input, [key]: value } } : d));
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Catalog</h1>
-        <Button onClick={() => setDraft({ ...EMPTY })}>Add item</Button>
-      </div>
+      <PageHeader
+        title="Catalog"
+        description="The products and services you sell — with live stock for tracked products."
+        actions={
+          <Button onClick={() => setDraft({ ...EMPTY })}>
+            <Plus className="size-4" /> Add item
+          </Button>
+        }
+      />
 
       {draft && (
         <Card>
@@ -103,7 +123,14 @@ export function CatalogPage() {
               {(p) => <Input {...p} value={draft.input.unit} onChange={(e) => field("unit", e.target.value)} />}
             </Field>
             <Field label="Default price">
-              {(p) => <Input {...p} inputMode="decimal" value={draft.price} onChange={(e) => setDraft((d) => (d ? { ...d, price: e.target.value } : d))} />}
+              {(p) => (
+                <Input
+                  {...p}
+                  inputMode="decimal"
+                  value={draft.price}
+                  onChange={(e) => setDraft((d) => (d ? { ...d, price: e.target.value } : d))}
+                />
+              )}
             </Field>
             <Field label="Default tax">
               {(p) => (
@@ -114,7 +141,9 @@ export function CatalogPage() {
                 >
                   <option value="">— None —</option>
                   {taxQ.data?.map((r) => (
-                    <option key={r.id} value={r.id}>{r.name}</option>
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
                   ))}
                 </Select>
               )}
@@ -135,15 +164,24 @@ export function CatalogPage() {
               <Button onClick={onSubmit} disabled={!draft.input.name.trim()}>
                 {draft.id === null ? "Create" : "Save"}
               </Button>
-              <Button variant="ghost" onClick={() => setDraft(null)}>Cancel</Button>
+              <Button variant="ghost" onClick={() => setDraft(null)}>
+                Cancel
+              </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
       <div className="max-w-sm">
-        <label htmlFor="item-search" className="sr-only">Search catalog</label>
-        <Input id="item-search" placeholder="Search name or SKU…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <label htmlFor="item-search" className="sr-only">
+          Search catalog
+        </label>
+        <Input
+          id="item-search"
+          placeholder="Search name or SKU…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
       </div>
 
       {listQ.isLoading ? (
@@ -151,49 +189,138 @@ export function CatalogPage() {
       ) : listQ.error ? (
         <ErrorState error={listQ.error} onRetry={() => listQ.refetch()} />
       ) : listQ.data && listQ.data.length === 0 ? (
-        <EmptyState title="No items yet" description="Add the products and services you sell." action={<Button onClick={() => setDraft({ ...EMPTY })}>Add item</Button>} />
+        <EmptyState
+          title="No items yet"
+          description="Add the products and services you sell."
+          action={
+            <Button onClick={() => setDraft({ ...EMPTY })}>
+              <Plus className="size-4" /> Add item
+            </Button>
+          }
+        />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Price</TableHead>
-              <TableHead>Stock</TableHead>
-              <TableHead><span className="sr-only">Actions</span></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {listQ.data?.map((it) => {
-              const low = it.tracked && it.reorder_point !== null && it.qty_on_hand <= it.reorder_point;
-              return (
-                <TableRow key={it.id}>
-                  <TableCell className="font-medium">{it.name}</TableCell>
-                  <TableCell>{it.kind === "product" ? "Product" : "Service"}</TableCell>
-                  <TableCell>{money(it.default_price_minor)}</TableCell>
-                  <TableCell>
-                    {it.tracked ? (
-                      <span className="flex items-center gap-2">
-                        {it.qty_on_hand}
-                        {low && <Badge variant="warning">Low</Badge>}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right whitespace-nowrap">
-                    {it.tracked && (
-                      <Button variant="ghost" size="sm" onClick={() => onAdjust(it)}>Adjust</Button>
-                    )}
-                    <Button variant="ghost" size="sm" onClick={() => startEdit(it)}>Edit</Button>
-                    <Button variant="ghost" size="sm" onClick={() => window.confirm(`Delete ${it.name}?`) && deleteMut.mutate(it.id)}>Delete</Button>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+        <Card className="overflow-hidden py-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="pl-4">Name</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead className="text-right">Price</TableHead>
+                <TableHead>Stock</TableHead>
+                <TableHead>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {listQ.data?.map((it) => {
+                const low = it.tracked && it.reorder_point !== null && it.qty_on_hand <= it.reorder_point;
+                return (
+                  <TableRow key={it.id}>
+                    <TableCell className="pl-4 font-medium">{it.name}</TableCell>
+                    <TableCell>{it.kind === "product" ? "Product" : "Service"}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(it.default_price_minor)}</TableCell>
+                    <TableCell>
+                      {it.tracked ? (
+                        <span className="flex items-center gap-2">
+                          {it.qty_on_hand}
+                          {low && <Badge variant="warning">Low</Badge>}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="pr-4 text-right whitespace-nowrap">
+                      {it.tracked && (
+                        <Button variant="ghost" size="sm" onClick={() => setAdjusting(it)}>
+                          Adjust
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="sm" onClick={() => startEdit(it)}>
+                        Edit
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setDeleting(it)}>
+                        Delete
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </Card>
       )}
+
+      {adjusting && (
+        <AdjustStockDialog
+          item={adjusting}
+          pending={adjustMut.isPending}
+          onClose={() => setAdjusting(null)}
+          onSubmit={async (delta, note) => {
+            await adjustMut.mutateAsync({ id: adjusting.id, delta, note });
+            setAdjusting(null);
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={async () => {
+          if (deleting) await deleteMut.mutateAsync(deleting.id);
+          setDeleting(null);
+        }}
+        title={`Delete ${deleting?.name ?? "item"}?`}
+        description="Existing documents keep their lines; the item just leaves the catalog."
+        confirmLabel="Delete item"
+        destructive
+        pending={deleteMut.isPending}
+      />
     </div>
+  );
+}
+
+function AdjustStockDialog({
+  item,
+  pending,
+  onClose,
+  onSubmit,
+}: {
+  item: Item;
+  pending: boolean;
+  onClose: () => void;
+  onSubmit: (delta: number, note: string) => void;
+}) {
+  const [delta, setDelta] = useState("");
+  const [note, setNote] = useState("manual adjustment");
+  const parsed = Number(delta);
+  const valid = Number.isInteger(parsed) && parsed !== 0;
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Adjust stock — ${item.name}`}
+      description={`Currently ${item.qty_on_hand} on hand. Use a negative number to remove stock.`}
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={!valid || pending} onClick={() => valid && onSubmit(parsed, note)}>
+            {pending ? "Saving…" : "Adjust stock"}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-4">
+        <Field label="Change" hint="e.g. 10 received, or -3 damaged" required>
+          {(p) => <Input {...p} inputMode="numeric" value={delta} onChange={(e) => setDelta(e.target.value)} />}
+        </Field>
+        <Field label="Note">
+          {(p) => <Input {...p} value={note} onChange={(e) => setNote(e.target.value)} />}
+        </Field>
+      </div>
+    </Dialog>
   );
 }

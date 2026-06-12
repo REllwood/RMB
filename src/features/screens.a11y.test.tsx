@@ -40,10 +40,28 @@ vi.mock("@/lib/ipc", () => ({
     listJobs: async () => [
       { id: 1, customer_id: 1, title: "Rewire", description: "", status: "open", source_quote_id: null, created_at: "2026-06-05" },
     ],
+    getCustomer: async () => ({
+      id: 1, name: "Jane Doe", email: "j@d.c", phone: "555", billing_address: "1 St", notes: "", created_at: "2026-06-05",
+    }),
+    customerHistory: async () => ({
+      quotes: [
+        { id: 1, customer_id: 1, number: "Q-0001", status: "draft", valid_until: null, subtotal_minor: 1000, tax_minor: 200, total_minor: 1200, notes: "", converted_invoice_id: null, created_at: "2026-06-05" },
+      ],
+      jobs: [
+        { id: 1, customer_id: 1, title: "Rewire", description: "", status: "open", source_quote_id: null, created_at: "2026-06-05" },
+      ],
+      invoices: [
+        { id: 1, customer_id: 1, number: "INV-0001", status: "issued", issue_date: "2026-06-05", due_date: null, subtotal_minor: 1000, tax_minor: 200, total_minor: 1200, notes: "", created_at: "2026-06-05" },
+      ],
+    }),
+    invoicePayments: async () => [
+      { id: 1, date: "2026-06-05 10:00:00", amount_minor: 500, method: "cash", reference: "" },
+    ],
     dashboardSummary: async () => ({
       outstanding_minor: 1200,
       draft_count: 0,
       unpaid_count: 1,
+      overdue_count: 1,
       paid_count: 0,
       low_stock: [{ id: 1, name: "Widget", qty_on_hand: 3, reorder_point: 5 }],
     }),

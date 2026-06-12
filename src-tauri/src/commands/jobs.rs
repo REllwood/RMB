@@ -24,6 +24,11 @@ pub async fn create_job(db: State<'_, Db>, input: JobInput) -> Result<i64, AppEr
 }
 
 #[tauri::command]
+pub async fn convert_quote_to_job(db: State<'_, Db>, quote_id: i64) -> Result<i64, AppError> {
+    Ok(repo::create_from_quote(&db, quote_id).await?)
+}
+
+#[tauri::command]
 pub async fn set_job_status(db: State<'_, Db>, id: i64, status: String) -> Result<(), AppError> {
     repo::set_status(&db, id, &status).await?;
     Ok(())

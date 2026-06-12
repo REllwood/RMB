@@ -19,6 +19,7 @@ pub struct DashboardSummary {
     pub outstanding_minor: i64,
     pub draft_count: i64,
     pub unpaid_count: i64,
+    pub overdue_count: i64,
     pub paid_count: i64,
     pub low_stock: Vec<LowStockItem>,
 }
@@ -39,6 +40,13 @@ pub async fn summary(db: &Db) -> Result<DashboardSummary, DataError> {
         sqlx::query_scalar("SELECT COUNT(*) FROM invoice WHERE status IN ('issued', 'part_paid')")
             .fetch_one(db)
             .await?;
+    // Overdue = unpaid past its due date, judged in the user's local timezone.
+    let overdue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM invoice WHERE status IN ('issued', 'part_paid') \
+         AND due_date IS NOT NULL AND due_date < date('now','localtime')",
+    )
+    .fetch_one(db)
+    .await?;
     let paid_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invoice WHERE status = 'paid'")
         .fetch_one(db)
         .await?;
@@ -54,6 +62,7 @@ pub async fn summary(db: &Db) -> Result<DashboardSummary, DataError> {
         outstanding_minor,
         draft_count,
         unpaid_count,
+        overdue_count,
         paid_count,
         low_stock,
     })
@@ -99,6 +108,27 @@ mod tests {
         let s = summary(&pool).await?;
         assert_eq!(s.outstanding_minor, 6000); // 100.00 - 40.00
         assert_eq!(s.unpaid_count, 1);
+        assert_eq!(s.overdue_count, 0); // no due date → never overdue
+
+        // An unpaid invoice past its due date counts as overdue.
+        let late = invoices::create_draft(
+            &pool,
+            c,
+            &[invoices::LineInput {
+                item_id: None,
+                description: "y".into(),
+                quantity: "1".into(),
+                unit_price_minor: 5000,
+                tax_rate_name: "No Tax".into(),
+                tax_rate_bp: 0,
+                tax_inclusive: false,
+            }],
+            Some("2000-01-01"),
+            "",
+        )
+        .await?;
+        invoices::issue(&pool, late).await?;
+        assert_eq!(summary(&pool).await?.overdue_count, 1);
         Ok(())
     }
 }

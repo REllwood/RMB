@@ -58,8 +58,11 @@ pub async fn record_payment(
     }
     let alloc = amount_minor.min(outstanding); // clamp overpayment; always > 0 here
 
+    // `localtime`: the payment date is a business-facing date on the user's machine, not a UTC
+    // audit stamp — UTC would show "yesterday" for morning payments east of Greenwich.
     let payment_id = sqlx::query(
-        "INSERT INTO payment (customer_id, amount_minor, method, reference) VALUES (?, ?, ?, ?)",
+        "INSERT INTO payment (customer_id, date, amount_minor, method, reference) \
+         VALUES (?, datetime('now','localtime'), ?, ?, ?)",
     )
     .bind(customer_id)
     .bind(amount_minor)
@@ -95,6 +98,60 @@ pub async fn record_payment(
 
     tx.commit().await?;
     Ok(alloc)
+}
+
+/// Delete a mis-entered payment (and its allocations), re-deriving each affected invoice's
+/// status from the remaining allocations. This is the v1 correction path for "paid the wrong
+/// invoice" — proper credit notes/refunds are a later module.
+pub async fn delete_payment(db: &Db, payment_id: i64) -> Result<(), DataError> {
+    let mut tx = db.begin().await?;
+
+    let invoice_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT invoice_id FROM payment_allocation WHERE payment_id = ?",
+    )
+    .bind(payment_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    sqlx::query("DELETE FROM payment_allocation WHERE payment_id = ?")
+        .bind(payment_id)
+        .execute(&mut *tx)
+        .await?;
+    let deleted = sqlx::query("DELETE FROM payment WHERE id = ?")
+        .bind(payment_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if deleted == 0 {
+        return Err(DataError::Other("payment not found".into()));
+    }
+
+    for invoice_id in invoice_ids {
+        let (total, status) = sqlx::query_as::<_, (i64, String)>(
+            "SELECT total_minor, status FROM invoice WHERE id = ?",
+        )
+        .bind(invoice_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let paid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(amount_minor), 0) FROM payment_allocation WHERE invoice_id = ?",
+        )
+        .bind(invoice_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        // Only payment-derived statuses move; draft/void are explicit states left untouched.
+        if matches!(status.as_str(), "issued" | "part_paid" | "paid") {
+            let new_status = payment_status(Money::from_minor(total), Money::from_minor(paid));
+            sqlx::query("UPDATE invoice SET status = ? WHERE id = ?")
+                .bind(new_status.as_db())
+                .bind(invoice_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(())
 }
 
 pub async fn list_for_invoice(db: &Db, invoice_id: i64) -> Result<Vec<Payment>, DataError> {
@@ -182,6 +239,45 @@ mod tests {
                 .status,
             "paid"
         );
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn delete_payment_rewinds_status(pool: Db) -> Result<(), DataError> {
+        let inv = issued_invoice(&pool, 10000).await;
+        let status = |pool: Db| async move {
+            invoices::get_detail(&pool, inv)
+                .await
+                .unwrap()
+                .unwrap()
+                .invoice
+                .status
+        };
+
+        record_payment(&pool, inv, 4000, "cash", "").await?;
+        record_payment(&pool, inv, 6000, "card", "").await?;
+        assert_eq!(status(pool.clone()).await, "paid");
+
+        let payments = list_for_invoice(&pool, inv).await?;
+        assert_eq!(payments.len(), 2);
+
+        // Delete the $60.00 card payment → back to part_paid.
+        let card = payments.iter().find(|p| p.method == "card").unwrap().id;
+        delete_payment(&pool, card).await?;
+        assert_eq!(status(pool.clone()).await, "part_paid");
+        assert_eq!(
+            invoices::get_detail(&pool, inv)
+                .await?
+                .unwrap()
+                .amount_paid_minor,
+            4000
+        );
+
+        // Delete the remaining payment → back to issued; unknown id errors.
+        let cash = list_for_invoice(&pool, inv).await?[0].id;
+        delete_payment(&pool, cash).await?;
+        assert_eq!(status(pool.clone()).await, "issued");
+        assert!(delete_payment(&pool, 99999).await.is_err());
         Ok(())
     }
 }

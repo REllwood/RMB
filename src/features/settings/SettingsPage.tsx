@@ -6,8 +6,10 @@ import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { Settings } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -49,6 +51,7 @@ export function SettingsPage() {
 
   const [taxName, setTaxName] = useState("");
   const [taxPct, setTaxPct] = useState("");
+  const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
 
   if (settingsQ.isLoading || !form) return <Loading label="Loading settings…" />;
   if (settingsQ.error) return <ErrorState error={settingsQ.error} onRetry={() => settingsQ.refetch()} />;
@@ -74,9 +77,7 @@ export function SettingsPage() {
 
   async function onRestore() {
     const path = await open({ multiple: false, filters: [{ name: "SQLite", extensions: ["sqlite"] }] });
-    if (typeof path === "string" && window.confirm("Restore will replace all current data and restart the app. Continue?")) {
-      await ipc.restoreDatabase(path);
-    }
+    if (typeof path === "string") setConfirmRestore(path);
   }
 
   function onAddTax() {
@@ -89,7 +90,7 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+      <PageHeader title="Settings" description="Your business details, tax setup, and data." />
 
       <Card>
         <CardHeader>
@@ -221,6 +222,19 @@ export function SettingsPage() {
           <Button variant="outline" onClick={onRestore}>Restore…</Button>
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={confirmRestore !== null}
+        onClose={() => setConfirmRestore(null)}
+        onConfirm={async () => {
+          if (confirmRestore) await ipc.restoreDatabase(confirmRestore);
+          setConfirmRestore(null);
+        }}
+        title="Restore from backup?"
+        description="All current data is replaced by the backup and the app restarts. Back up first if unsure."
+        confirmLabel="Restore"
+        destructive
+      />
     </div>
   );
 }

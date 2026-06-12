@@ -139,6 +139,7 @@ export interface DashboardSummary {
   outstanding_minor: number;
   draft_count: number;
   unpaid_count: number;
+  overdue_count: number;
   paid_count: number;
   low_stock: LowStockItem[];
 }
@@ -230,4 +231,10 @@ export interface JobDetail {
   materials: JobMaterial[];
   labour_total_minor: number;
   materials_total_minor: number;
+}
+
+export interface CustomerHistory {
+  quotes: QuoteRow[];
+  jobs: Job[];
+  invoices: InvoiceRow[];
 }

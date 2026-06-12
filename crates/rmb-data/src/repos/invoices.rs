@@ -133,7 +133,18 @@ pub(crate) async fn create_draft_on(
     .await?
     .last_insert_rowid();
 
-    for (i, (l, dl)) in lines.iter().zip(doc_lines.iter()).enumerate() {
+    insert_lines(conn, invoice_id, lines).await?;
+    Ok(invoice_id)
+}
+
+/// Insert the computed line rows for an invoice (shared by create + update-draft).
+async fn insert_lines(
+    conn: &mut sqlx::SqliteConnection,
+    invoice_id: i64,
+    lines: &[LineInput],
+) -> Result<(), DataError> {
+    for (i, l) in lines.iter().enumerate() {
+        let dl = to_doc_line(l)?;
         let lt = line_tax(dl.line_amount(), &dl.tax_rate);
         sqlx::query(
             "INSERT INTO invoice_line (invoice_id, item_id, description, quantity, unit_price_minor, \
@@ -155,7 +166,7 @@ pub(crate) async fn create_draft_on(
         .execute(&mut *conn)
         .await?;
     }
-    Ok(invoice_id)
+    Ok(())
 }
 
 /// Create a draft invoice from line inputs in its own transaction.
@@ -170,6 +181,96 @@ pub async fn create_draft(
     let invoice_id = create_draft_on(&mut tx, customer_id, lines, due_date, notes).await?;
     tx.commit().await?;
     Ok(invoice_id)
+}
+
+/// Replace a **draft** invoice's customer, lines, due date, and notes (recomputing totals).
+/// Issued invoices are immutable — anything past draft is rejected.
+pub async fn update_draft(
+    db: &Db,
+    id: i64,
+    customer_id: i64,
+    lines: &[LineInput],
+    due_date: Option<&str>,
+    notes: &str,
+) -> Result<(), DataError> {
+    if lines.is_empty() {
+        return Err(DataError::Other(
+            "an invoice needs at least one line".into(),
+        ));
+    }
+    let doc_lines = lines
+        .iter()
+        .map(to_doc_line)
+        .collect::<Result<Vec<_>, _>>()?;
+    let totals = total_lines(&doc_lines);
+    let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
+
+    let mut tx = db.begin().await?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM invoice WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match status.as_deref() {
+        None => return Err(DataError::Other("invoice not found".into())),
+        Some("draft") => {}
+        Some(_) => {
+            return Err(DataError::Other(
+                "only draft invoices can be edited (void + reissue to correct an issued one)"
+                    .into(),
+            ))
+        }
+    }
+
+    sqlx::query(
+        "UPDATE invoice SET customer_id = ?, due_date = ?, notes = ?, subtotal_minor = ?, \
+         tax_minor = ?, total_minor = ?, tax_summary = ? WHERE id = ?",
+    )
+    .bind(customer_id)
+    .bind(due_date)
+    .bind(notes)
+    .bind(totals.subtotal.minor())
+    .bind(totals.tax_total.minor())
+    .bind(totals.total.minor())
+    .bind(tax_summary)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM invoice_line WHERE invoice_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    insert_lines(&mut tx, id, lines).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Hard-delete a **draft** invoice (and its lines). Drafts have no number, no stock effect, and
+/// no payments, so deletion is safe; issued invoices are voided, never deleted.
+pub async fn delete_draft(db: &Db, id: i64) -> Result<(), DataError> {
+    let mut tx = db.begin().await?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM invoice WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match status.as_deref() {
+        None => return Err(DataError::Other("invoice not found".into())),
+        Some("draft") => {}
+        Some(_) => {
+            return Err(DataError::Other(
+                "only draft invoices can be deleted (issued invoices are voided instead)".into(),
+            ))
+        }
+    }
+    sqlx::query("DELETE FROM invoice_line WHERE invoice_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM invoice WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Issue a draft: assign number, freeze snapshots, decrement stock once, set status = issued.
@@ -264,7 +365,7 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
 
     let new_status = payment_status(Money::from_minor(total_minor), Money::ZERO).as_db();
     sqlx::query(
-        "UPDATE invoice SET status = ?, number = ?, issue_date = date('now'), \
+        "UPDATE invoice SET status = ?, number = ?, issue_date = date('now','localtime'), \
          issued_at = datetime('now'), business_snapshot = ?, customer_snapshot = ? WHERE id = ?",
     )
     .bind(new_status)
@@ -348,6 +449,16 @@ pub async fn list(db: &Db) -> Result<Vec<InvoiceRow>, DataError> {
         "SELECT id, customer_id, number, status, issue_date, due_date, subtotal_minor, tax_minor, \
          total_minor, notes, created_at FROM invoice ORDER BY id DESC",
     )
+    .fetch_all(db)
+    .await?)
+}
+
+pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<InvoiceRow>, DataError> {
+    Ok(sqlx::query_as::<_, InvoiceRow>(
+        "SELECT id, customer_id, number, status, issue_date, due_date, subtotal_minor, tax_minor, \
+         total_minor, notes, created_at FROM invoice WHERE customer_id = ? ORDER BY id DESC",
+    )
+    .bind(customer_id)
     .fetch_all(db)
     .await?)
 }
@@ -471,6 +582,55 @@ mod tests {
 
         // re-issuing fails (immutable)
         assert!(issue(&pool, inv).await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn update_and_delete_draft_only(pool: Db) -> Result<(), DataError> {
+        let customer = seed_customer(&pool).await;
+        let inv = create_draft(&pool, customer, &[line(None, "1", 1000, 0)], None, "v1").await?;
+
+        // Edit the draft: new lines + due date + notes, totals recomputed.
+        update_draft(
+            &pool,
+            inv,
+            customer,
+            &[line(None, "2", 2500, 2000)],
+            Some("2026-07-01"),
+            "v2",
+        )
+        .await?;
+        let d = get_detail(&pool, inv).await?.unwrap();
+        assert_eq!(d.lines.len(), 1);
+        assert_eq!(d.invoice.subtotal_minor, 5000); // 2 × $25.00
+        assert_eq!(d.invoice.tax_minor, 1000); // 20%
+        assert_eq!(d.invoice.due_date.as_deref(), Some("2026-07-01"));
+        assert_eq!(d.invoice.notes, "v2");
+
+        // Empty lines rejected.
+        assert!(update_draft(&pool, inv, customer, &[], None, "")
+            .await
+            .is_err());
+
+        // Once issued: immutable — no edit, no delete.
+        issue(&pool, inv).await?;
+        assert!(
+            update_draft(&pool, inv, customer, &[line(None, "1", 1, 0)], None, "")
+                .await
+                .is_err()
+        );
+        assert!(delete_draft(&pool, inv).await.is_err());
+
+        // A fresh draft deletes cleanly (lines too).
+        let doomed = create_draft(&pool, customer, &[line(None, "1", 500, 0)], None, "").await?;
+        delete_draft(&pool, doomed).await?;
+        assert!(get_detail(&pool, doomed).await?.is_none());
+        let orphan_lines: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM invoice_line WHERE invoice_id = ?")
+                .bind(doomed)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(orphan_lines, 0);
         Ok(())
     }
 

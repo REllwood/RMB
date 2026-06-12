@@ -29,6 +29,19 @@ pub async fn create_quote(
 }
 
 #[tauri::command]
+pub async fn update_quote_draft(
+    db: State<'_, Db>,
+    id: i64,
+    customer_id: i64,
+    lines: Vec<LineInput>,
+    valid_until: Option<String>,
+    notes: String,
+) -> Result<(), AppError> {
+    quotes::update_draft(&db, id, customer_id, &lines, valid_until.as_deref(), &notes).await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_quote_status(db: State<'_, Db>, id: i64, status: String) -> Result<(), AppError> {
     quotes::set_status(&db, id, &status).await?;
     Ok(())

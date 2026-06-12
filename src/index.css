@@ -69,7 +69,8 @@
   --brand-foreground: oklch(0.205 0 0);
 
   --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
+  /* Dark text on the bright dark-mode red: white would be 2.9:1 (fails AA); this is 6.9:1. */
+  --destructive-foreground: oklch(0.145 0 0);
   --success: oklch(0.5 0.14 150); /* dark enough for white text (WCAG AA) */
   --warning: oklch(0.769 0.156 70.08);
 

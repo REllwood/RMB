@@ -26,7 +26,7 @@ const T = {
     secondaryFg: "oklch(0.985 0 0)",
     mutedFg: "oklch(0.708 0 0)",
     destructive: "oklch(0.704 0.191 22.216)",
-    destructiveFg: "oklch(0.985 0 0)",
+    destructiveFg: "oklch(0.145 0 0)",
     success: "oklch(0.5 0.14 150)",
     white: "#ffffff",
   },
@@ -72,5 +72,13 @@ describe("design token contrast (WCAG 2.1 AA, normal text ≥ 4.5:1)", () => {
   });
   it("dark — destructive text on background (tinted badge)", () => {
     expect(ratio(T.dark.destructive, T.dark.background)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+
+  // Solid destructive buttons (confirm dialogs) — label on the destructive background.
+  it("light — destructive button label", () => {
+    expect(ratio(T.light.destructiveFg, T.light.destructive)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+  it("dark — destructive button label", () => {
+    expect(ratio(T.dark.destructiveFg, T.dark.destructive)).toBeGreaterThanOrEqual(AA_TEXT);
   });
 });

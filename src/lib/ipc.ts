@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Customer,
+  CustomerHistory,
   CustomerInput,
   DashboardSummary,
   InvoiceDetail,
@@ -53,6 +54,7 @@ export const ipc = {
   updateCustomer: (id: number, input: CustomerInput) =>
     invoke<void>("update_customer", { id, input }),
   deleteCustomer: (id: number) => invoke<void>("delete_customer", { id }),
+  customerHistory: (id: number) => invoke<CustomerHistory>("customer_history", { id }),
 
   // catalog + stock
   listItems: (search?: string) => invoke<Item[]>("list_items", { search }),
@@ -73,11 +75,20 @@ export const ipc = {
     dueDate: string | null,
     notes: string,
   ) => invoke<number>("create_invoice", { customerId, lines, dueDate, notes }),
+  updateInvoiceDraft: (
+    id: number,
+    customerId: number,
+    lines: LineInput[],
+    dueDate: string | null,
+    notes: string,
+  ) => invoke<void>("update_invoice_draft", { id, customerId, lines, dueDate, notes }),
+  deleteInvoiceDraft: (id: number) => invoke<void>("delete_invoice_draft", { id }),
   issueInvoice: (id: number) => invoke<void>("issue_invoice", { id }),
   voidInvoice: (id: number) => invoke<void>("void_invoice", { id }),
   recordPayment: (invoiceId: number, amountMinor: number, method: string, reference: string) =>
     invoke<number>("record_payment", { invoiceId, amountMinor, method, reference }),
   invoicePayments: (invoiceId: number) => invoke<Payment[]>("invoice_payments", { invoiceId }),
+  deletePayment: (id: number) => invoke<void>("delete_payment", { id }),
 
   // dashboard
   dashboardSummary: () => invoke<DashboardSummary>("dashboard_summary"),
@@ -91,10 +102,18 @@ export const ipc = {
     validUntil: string | null,
     notes: string,
   ) => invoke<number>("create_quote", { customerId, lines, validUntil, notes }),
+  updateQuoteDraft: (
+    id: number,
+    customerId: number,
+    lines: LineInput[],
+    validUntil: string | null,
+    notes: string,
+  ) => invoke<void>("update_quote_draft", { id, customerId, lines, validUntil, notes }),
   setQuoteStatus: (id: number, status: string) =>
     invoke<void>("set_quote_status", { id, status }),
   deleteQuote: (id: number) => invoke<void>("delete_quote", { id }),
   convertQuoteToInvoice: (id: number) => invoke<number>("convert_quote_to_invoice", { id }),
+  convertQuoteToJob: (quoteId: number) => invoke<number>("convert_quote_to_job", { quoteId }),
 
   // jobs + timekeeping
   listJobs: () => invoke<Job[]>("list_jobs"),

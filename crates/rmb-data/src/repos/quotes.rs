@@ -95,7 +95,19 @@ pub async fn create_draft(
     .await?
     .last_insert_rowid();
 
-    for (i, (l, dl)) in lines.iter().zip(doc_lines.iter()).enumerate() {
+    insert_lines(&mut tx, quote_id, lines).await?;
+    tx.commit().await?;
+    Ok(quote_id)
+}
+
+/// Insert the computed line rows for a quote (shared by create + update-draft).
+async fn insert_lines(
+    conn: &mut sqlx::SqliteConnection,
+    quote_id: i64,
+    lines: &[LineInput],
+) -> Result<(), DataError> {
+    for (i, l) in lines.iter().enumerate() {
+        let dl = to_doc_line(l)?;
         let lt = line_tax(dl.line_amount(), &dl.tax_rate);
         sqlx::query(
             "INSERT INTO quote_line (quote_id, item_id, description, quantity, unit_price_minor, \
@@ -114,11 +126,69 @@ pub async fn create_draft(
         .bind(lt.tax.minor())
         .bind(lt.gross.minor())
         .bind(i as i64)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
+    Ok(())
+}
+
+/// Replace a **draft** quote's customer, lines, validity, and notes (recomputing totals).
+/// A sent quote must be pulled back to draft first (`sent → draft` is a legal transition).
+pub async fn update_draft(
+    db: &Db,
+    id: i64,
+    customer_id: i64,
+    lines: &[LineInput],
+    valid_until: Option<&str>,
+    notes: &str,
+) -> Result<(), DataError> {
+    if lines.is_empty() {
+        return Err(DataError::Other("a quote needs at least one line".into()));
+    }
+    let doc_lines = lines
+        .iter()
+        .map(to_doc_line)
+        .collect::<Result<Vec<_>, _>>()?;
+    let totals = total_lines(&doc_lines);
+    let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
+
+    let mut tx = db.begin().await?;
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM quote WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    match status.as_deref() {
+        None => return Err(DataError::Other("quote not found".into())),
+        Some("draft") => {}
+        Some(s) => {
+            return Err(DataError::Other(format!(
+                "only draft quotes can be edited (this one is {s})"
+            )))
+        }
+    }
+
+    sqlx::query(
+        "UPDATE quote SET customer_id = ?, valid_until = ?, notes = ?, subtotal_minor = ?, \
+         tax_minor = ?, total_minor = ?, tax_summary = ? WHERE id = ?",
+    )
+    .bind(customer_id)
+    .bind(valid_until)
+    .bind(notes)
+    .bind(totals.subtotal.minor())
+    .bind(totals.tax_total.minor())
+    .bind(totals.total.minor())
+    .bind(tax_summary)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM quote_line WHERE quote_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    insert_lines(&mut tx, id, lines).await?;
     tx.commit().await?;
-    Ok(quote_id)
+    Ok(())
 }
 
 pub async fn list(db: &Db) -> Result<Vec<QuoteRow>, DataError> {
@@ -127,6 +197,17 @@ pub async fn list(db: &Db) -> Result<Vec<QuoteRow>, DataError> {
          total_minor, notes, converted_invoice_id, created_at FROM quote \
          WHERE deleted_at IS NULL ORDER BY id DESC",
     )
+    .fetch_all(db)
+    .await?)
+}
+
+pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<QuoteRow>, DataError> {
+    Ok(sqlx::query_as::<_, QuoteRow>(
+        "SELECT id, customer_id, number, status, valid_until, subtotal_minor, tax_minor, \
+         total_minor, notes, converted_invoice_id, created_at FROM quote \
+         WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC",
+    )
+    .bind(customer_id)
     .fetch_all(db)
     .await?)
 }
@@ -272,7 +353,28 @@ mod tests {
         assert_eq!(d.quote.tax_minor, 10000);
         assert_eq!(d.quote.total_minor, 60000);
 
+        // Draft edits recompute totals; the assigned number is kept.
+        let edited = LineInput {
+            item_id: None,
+            description: "Design work (revised)".into(),
+            quantity: "2".into(),
+            unit_price_minor: 5000,
+            tax_rate_name: "VAT 20%".into(),
+            tax_rate_bp: 2000,
+            tax_inclusive: false,
+        };
+        let number_before = d.quote.number.clone();
+        update_draft(&pool, q, customer, &[edited], None, "revised").await?;
+        let d2 = get_detail(&pool, q).await?.unwrap();
+        assert_eq!(d2.quote.total_minor, 12000); // 2 × $50 + 20%
+        assert_eq!(d2.quote.number, number_before);
+        assert_eq!(d2.lines.len(), 1);
+
         set_status(&pool, q, "sent").await?;
+        // Sent quotes are not editable (pull back to draft first).
+        assert!(update_draft(&pool, q, customer, &[], None, "")
+            .await
+            .is_err());
         set_status(&pool, q, "accepted").await?;
         assert!(set_status(&pool, q, "draft").await.is_err()); // illegal accepted→draft
 
@@ -282,7 +384,7 @@ mod tests {
             "converted"
         );
         let inv_detail = invoices::get_detail(&pool, invoice_id).await?.unwrap();
-        assert_eq!(inv_detail.invoice.total_minor, 60000);
+        assert_eq!(inv_detail.invoice.total_minor, 12000); // matches the edited quote
         Ok(())
     }
 }

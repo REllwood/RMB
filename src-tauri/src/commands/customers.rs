@@ -2,9 +2,22 @@
 
 use rmb_data::db::Db;
 use rmb_data::repos::customers::{self, Customer, CustomerInput};
+use rmb_data::repos::invoices::InvoiceRow;
+use rmb_data::repos::jobs::Job;
+use rmb_data::repos::quotes::QuoteRow;
+use rmb_data::repos::{invoices, jobs, quotes};
+use serde::Serialize;
 use tauri::State;
 
 use crate::error::AppError;
+
+/// Everything for one customer in one place — quotes, jobs, invoices.
+#[derive(Debug, Serialize)]
+pub struct CustomerHistory {
+    pub quotes: Vec<QuoteRow>,
+    pub jobs: Vec<Job>,
+    pub invoices: Vec<InvoiceRow>,
+}
 
 #[tauri::command]
 pub async fn list_customers(
@@ -38,4 +51,13 @@ pub async fn update_customer(
 pub async fn delete_customer(db: State<'_, Db>, id: i64) -> Result<(), AppError> {
     customers::soft_delete(&db, id).await?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn customer_history(db: State<'_, Db>, id: i64) -> Result<CustomerHistory, AppError> {
+    Ok(CustomerHistory {
+        quotes: quotes::list_for_customer(&db, id).await?,
+        jobs: jobs::list_for_customer(&db, id).await?,
+        invoices: invoices::list_for_customer(&db, id).await?,
+    })
 }

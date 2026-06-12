@@ -110,6 +110,76 @@ pub async fn list(db: &Db) -> Result<Vec<Job>, DataError> {
     .await?)
 }
 
+pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<Job>, DataError> {
+    Ok(sqlx::query_as::<_, Job>(
+        "SELECT id, customer_id, title, description, status, source_quote_id, created_at \
+         FROM job WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC",
+    )
+    .bind(customer_id)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Create a job from an **accepted** quote: the quote's lines become the job's (un-invoiced)
+/// materials, the job links back via `source_quote_id`, and the quote is marked `converted` —
+/// all in one transaction. Time is then logged as the work happens, and billing goes through
+/// `invoice_from_job` (so the quoted scope can't also be converted straight to an invoice).
+pub async fn create_from_quote(db: &Db, quote_id: i64) -> Result<i64, DataError> {
+    let detail = crate::repos::quotes::get_detail(db, quote_id)
+        .await?
+        .ok_or_else(|| DataError::Other("quote not found".into()))?;
+    if detail.quote.status != "accepted" {
+        return Err(DataError::Other(format!(
+            "only an accepted quote can become a job (this one is {})",
+            detail.quote.status
+        )));
+    }
+    let title = format!(
+        "Job — {}",
+        detail
+            .quote
+            .number
+            .clone()
+            .unwrap_or_else(|| format!("quote #{}", detail.quote.id))
+    );
+
+    let mut tx = db.begin().await?;
+    let job_id = sqlx::query(
+        "INSERT INTO job (customer_id, title, description, source_quote_id) VALUES (?, ?, ?, ?)",
+    )
+    .bind(detail.quote.customer_id)
+    .bind(&title)
+    .bind(&detail.quote.notes)
+    .bind(quote_id)
+    .execute(&mut *tx)
+    .await?
+    .last_insert_rowid();
+
+    for l in &detail.lines {
+        sqlx::query(
+            "INSERT INTO job_material (job_id, item_id, description, quantity, unit_price_minor, \
+             tax_rate_name, tax_rate_bp, tax_inclusive) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(job_id)
+        .bind(l.item_id)
+        .bind(&l.description)
+        .bind(&l.quantity)
+        .bind(l.unit_price_minor)
+        .bind(&l.tax_rate_name)
+        .bind(l.tax_rate_bp)
+        .bind(l.tax_inclusive)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query("UPDATE quote SET status = 'converted' WHERE id = ?")
+        .bind(quote_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(job_id)
+}
+
 pub async fn set_status(db: &Db, id: i64, status: &str) -> Result<(), DataError> {
     let current: Option<String> =
         sqlx::query_scalar("SELECT status FROM job WHERE id = ? AND deleted_at IS NULL")
@@ -430,6 +500,53 @@ mod tests {
         // Unknown status, and manual jump to the system-only `invoiced`, are both rejected.
         assert!(set_status(&pool, job, "banana").await.is_err());
         assert!(set_status(&pool, job, "invoiced").await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn job_from_accepted_quote(pool: Db) -> Result<(), DataError> {
+        use crate::repos::quotes;
+
+        let customer = customers::create(
+            &pool,
+            &customers::CustomerInput {
+                name: "Acme".into(),
+                email: String::new(),
+                phone: String::new(),
+                billing_address: String::new(),
+                notes: String::new(),
+            },
+        )
+        .await?;
+        let line = LineInput {
+            item_id: None,
+            description: "Turf supply".into(),
+            quantity: "4".into(),
+            unit_price_minor: 2500,
+            tax_rate_name: "GST 10%".into(),
+            tax_rate_bp: 1000,
+            tax_inclusive: false,
+        };
+        let q = quotes::create_draft(&pool, customer, &[line], None, "front lawn").await?;
+
+        // Not accepted yet → rejected.
+        assert!(create_from_quote(&pool, q).await.is_err());
+
+        quotes::set_status(&pool, q, "sent").await?;
+        quotes::set_status(&pool, q, "accepted").await?;
+        let job_id = create_from_quote(&pool, q).await?;
+
+        let d = get_detail(&pool, job_id).await?.unwrap();
+        assert_eq!(d.job.source_quote_id, Some(q));
+        assert_eq!(d.materials.len(), 1);
+        assert_eq!(d.materials[0].quantity, "4");
+        assert_eq!(d.materials_total_minor, 10000); // 4 × $25.00
+        assert_eq!(
+            quotes::get_detail(&pool, q).await?.unwrap().quote.status,
+            "converted"
+        );
+        // A converted quote can't be converted again (to a job or an invoice).
+        assert!(create_from_quote(&pool, q).await.is_err());
         Ok(())
     }
 }
