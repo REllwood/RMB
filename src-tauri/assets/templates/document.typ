@@ -36,12 +36,13 @@
 #d.customer_block.map(l => [#l]).join(linebreak())
 
 #v(1.4em)
+#let cols = d.at("columns", default: ("Description", "Qty", "Unit", "Amount"))
 #table(
   columns: (1fr, auto, auto, auto),
   align: (left, right, right, right),
   inset: 7pt,
   stroke: 0.5pt + luma(210),
-  table.header([*Description*], [*Qty*], [*Unit*], [*Amount*]),
+  table.header(..cols.map(c => [*#c*])),
   ..d.lines.flatten().map(x => [#x])
 )
 

@@ -9,6 +9,8 @@ pub mod invoicing;
 pub mod jobs;
 pub mod pdf;
 pub mod quoting;
+pub mod recurring;
+pub mod reports;
 pub mod settings;
 
 use rmb_data::db::Db;

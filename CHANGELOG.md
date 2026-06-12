@@ -6,6 +6,20 @@ All notable changes to RMB. Format loosely follows [Keep a Changelog](https://ke
 
 First feature-complete build of the v1 core.
 
+### Office pack (post-audit round 2)
+- **Reports**: tax collected per rate for any period (accrual, by issue date), sales by month,
+  top customers — with This month / Last month / This year / All time / custom ranges.
+- **CSV exports**: invoices, payments (cash basis), and customers — RFC-4180 quoted,
+  spreadsheet-ready amounts.
+- **Recurring invoices**: weekly → yearly schedules with optional end date and due-days;
+  due schedules auto-draft at app startup (catch-up generation, crash-safe one-tx-per-draft),
+  pause/resume, and a "generate due now" button.
+- **Receipt PDFs**: payment receipts per invoice (lists each payment, paid total, balance).
+- **Automatic backups**: rotating snapshot on every launch (newest 7 kept) in the app data dir.
+- **First-run guide**: dashboard banner walks new users to business setup.
+- **Golden-path E2E test**: the full story (setup → quote → job → invoice → payments →
+  history → numbering) chained against one real database.
+
 ### The core loop
 - Business settings with currency, **logo** (rendered on PDFs), document numbering, and a
   **configurable tax engine** (AU / NZ / UK / CA / US presets + custom rates, inclusive or exclusive).

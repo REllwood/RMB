@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { FileDown, Pencil, Plus, Trash2 } from "lucide-react";
+import { FileDown, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -26,12 +26,14 @@ import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
 import { DocumentForm } from "@/features/shared/DocumentForm";
 import { fromRows } from "@/features/shared/lines";
 import { invoiceStatus } from "@/features/invoices/status";
+import { RecurringView } from "@/features/invoices/RecurringView";
 
 type View =
   | { mode: "list" }
   | { mode: "create" }
   | { mode: "edit"; id: number }
-  | { mode: "detail"; id: number };
+  | { mode: "detail"; id: number }
+  | { mode: "recurring" };
 
 function StatusBadge({ inv }: { inv: Pick<InvoiceRow, "status" | "due_date"> }) {
   const s = invoiceStatus(inv);
@@ -48,9 +50,14 @@ export function InvoicesPage() {
         description="Issue, get paid, stay on top of what's owed."
         actions={
           view.mode === "list" ? (
-            <Button onClick={() => setView({ mode: "create" })}>
-              <Plus className="size-4" /> New invoice
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => setView({ mode: "recurring" })}>
+                <Repeat className="size-4" /> Recurring
+              </Button>
+              <Button onClick={() => setView({ mode: "create" })}>
+                <Plus className="size-4" /> New invoice
+              </Button>
+            </>
           ) : (
             <Button variant="ghost" onClick={() => setView({ mode: "list" })}>
               ← Back to list
@@ -60,6 +67,7 @@ export function InvoicesPage() {
       />
 
       {view.mode === "list" && <InvoiceList onOpen={(id) => setView({ mode: "detail", id })} />}
+      {view.mode === "recurring" && <RecurringView />}
       {view.mode === "create" && (
         <DocumentForm
           kind="invoice"
@@ -374,8 +382,23 @@ function InvoiceDetailView({
 
       {!isDraft && (
         <Card>
-          <CardHeader>
+          <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="text-base">Payments</CardTitle>
+            {(paymentsQ.data?.length ?? 0) > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  const path = await save({
+                    defaultPath: `${invoice.number ?? `invoice-${invoice.id}`}-receipt.pdf`,
+                    filters: [{ name: "PDF", extensions: ["pdf"] }],
+                  });
+                  if (path) await ipc.exportReceiptPdf(invoice.id, path);
+                }}
+              >
+                <FileDown className="size-4" /> Receipt PDF
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {paymentsQ.isLoading ? (

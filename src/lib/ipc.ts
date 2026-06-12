@@ -3,6 +3,7 @@ import type {
   Customer,
   CustomerHistory,
   CustomerInput,
+  CustomerSalesRow,
   DashboardSummary,
   InvoiceDetail,
   InvoiceRow,
@@ -13,12 +14,17 @@ import type {
   JobInput,
   JobMaterialInput,
   LineInput,
+  MonthlySalesRow,
   Payment,
   QuoteDetail,
   QuoteRow,
+  RecurringDetail,
+  RecurringInput,
+  RecurringListRow,
   Settings,
   StockMovement,
   TaxRate,
+  TaxSummaryRow,
   TimeEntryInput,
 } from "@/lib/types";
 
@@ -131,7 +137,33 @@ export const ipc = {
   deleteJobMaterial: (id: number) => invoke<void>("delete_job_material", { id }),
   invoiceJob: (id: number) => invoke<number>("invoice_job", { id }),
 
+  // recurring invoices
+  listRecurring: () => invoke<RecurringListRow[]>("list_recurring"),
+  getRecurring: (id: number) => invoke<RecurringDetail | null>("get_recurring", { id }),
+  createRecurring: (input: RecurringInput, lines: LineInput[]) =>
+    invoke<number>("create_recurring", { input, lines }),
+  updateRecurring: (id: number, input: RecurringInput, lines: LineInput[]) =>
+    invoke<void>("update_recurring", { id, input, lines }),
+  setRecurringActive: (id: number, active: boolean) =>
+    invoke<void>("set_recurring_active", { id, active }),
+  deleteRecurring: (id: number) => invoke<void>("delete_recurring", { id }),
+  runRecurringNow: () => invoke<number>("run_recurring_now"),
+
+  // reports + csv exports
+  reportTaxSummary: (from: string | null, to: string | null) =>
+    invoke<TaxSummaryRow[]>("report_tax_summary", { from, to }),
+  reportSalesMonthly: (from: string | null, to: string | null) =>
+    invoke<MonthlySalesRow[]>("report_sales_monthly", { from, to }),
+  reportSalesCustomers: (from: string | null, to: string | null) =>
+    invoke<CustomerSalesRow[]>("report_sales_customers", { from, to }),
+  exportInvoicesCsv: (dest: string, from: string | null, to: string | null) =>
+    invoke<void>("export_invoices_csv", { dest, from, to }),
+  exportPaymentsCsv: (dest: string, from: string | null, to: string | null) =>
+    invoke<void>("export_payments_csv", { dest, from, to }),
+  exportCustomersCsv: (dest: string) => invoke<void>("export_customers_csv", { dest }),
+
   // pdf export (dest path chosen via the dialog plugin in the UI)
   exportInvoicePdf: (id: number, dest: string) => invoke<void>("export_invoice_pdf", { id, dest }),
   exportQuotePdf: (id: number, dest: string) => invoke<void>("export_quote_pdf", { id, dest }),
+  exportReceiptPdf: (id: number, dest: string) => invoke<void>("export_receipt_pdf", { id, dest }),
 };

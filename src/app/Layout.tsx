@@ -4,6 +4,7 @@ import { Moon, Store, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setTheme, type Theme } from "@/lib/theme";
+import { NavContext } from "@/app/nav";
 import { SECTIONS, type SectionId } from "@/app/sections";
 
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -12,6 +13,7 @@ import { CatalogPage } from "@/features/catalog/CatalogPage";
 import { QuotesPage } from "@/features/quotes/QuotesPage";
 import { JobsPage } from "@/features/jobs/JobsPage";
 import { InvoicesPage } from "@/features/invoices/InvoicesPage";
+import { ReportsPage } from "@/features/reports/ReportsPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 
 function renderSection(id: SectionId) {
@@ -28,6 +30,8 @@ function renderSection(id: SectionId) {
       return <JobsPage />;
     case "invoices":
       return <InvoicesPage />;
+    case "reports":
+      return <ReportsPage />;
     case "settings":
       return <SettingsPage />;
   }
@@ -106,7 +110,9 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
       </nav>
 
       <main id="main" ref={mainRef} tabIndex={-1} className="overflow-y-auto p-6 outline-none lg:p-8">
-        <div className="mx-auto max-w-6xl">{renderSection(active)}</div>
+        <NavContext.Provider value={setActive}>
+          <div className="mx-auto max-w-6xl">{renderSection(active)}</div>
+        </NavContext.Provider>
       </main>
     </div>
   );

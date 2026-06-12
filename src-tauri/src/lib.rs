@@ -21,6 +21,24 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("rmb.sqlite");
             let pool = tauri::async_runtime::block_on(rmb_data::db::open(&db_path))?;
+
+            // Rotating safety net: snapshot the DB on every launch, keep the newest 7.
+            if let Err(e) = tauri::async_runtime::block_on(rmb_data::backup::auto_backup(
+                &pool,
+                &data_dir.join("backups"),
+                7,
+            )) {
+                eprintln!("auto-backup failed: {e}");
+            }
+
+            // Generate any recurring invoices that came due while the app was closed.
+            // Drafts only — nothing is issued without the user. Failure is non-fatal.
+            if let Err(e) =
+                tauri::async_runtime::block_on(rmb_data::repos::recurring::run_due_now(&pool))
+            {
+                eprintln!("recurring generation failed: {e}");
+            }
+
             app.manage(pool);
             Ok(())
         })
@@ -87,9 +105,25 @@ pub fn run() {
             commands::jobs::delete_time_entry,
             commands::jobs::delete_job_material,
             commands::jobs::invoice_job,
+            // recurring invoices
+            commands::recurring::list_recurring,
+            commands::recurring::get_recurring,
+            commands::recurring::create_recurring,
+            commands::recurring::update_recurring,
+            commands::recurring::set_recurring_active,
+            commands::recurring::delete_recurring,
+            commands::recurring::run_recurring_now,
+            // reports + exports
+            commands::reports::report_tax_summary,
+            commands::reports::report_sales_monthly,
+            commands::reports::report_sales_customers,
+            commands::reports::export_invoices_csv,
+            commands::reports::export_payments_csv,
+            commands::reports::export_customers_csv,
             // pdf
             commands::pdf::export_invoice_pdf,
-            commands::pdf::export_quote_pdf
+            commands::pdf::export_quote_pdf,
+            commands::pdf::export_receipt_pdf
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

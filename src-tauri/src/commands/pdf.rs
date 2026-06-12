@@ -1,8 +1,8 @@
-//! PDF export commands for invoices + quotes.
+//! PDF export commands for invoices, quotes, and payment receipts.
 
 use rmb_data::db::Db;
 use rmb_data::repos::settings::Settings;
-use rmb_data::repos::{customers, invoices, quotes, settings};
+use rmb_data::repos::{customers, invoices, payments, quotes, settings};
 use serde_json::json;
 use tauri::State;
 
@@ -132,6 +132,84 @@ pub async fn export_invoice_pdf(db: State<'_, Db>, id: i64, dest: String) -> Res
         "lines": lines,
         "totals": totals,
         "notes": detail.invoice.notes,
+    })
+    .to_string();
+
+    write_pdf(&data, load_logo(&s), &dest)
+}
+
+/// Receipt for an invoice's recorded payments — proof of what was paid and what remains.
+#[tauri::command]
+pub async fn export_receipt_pdf(db: State<'_, Db>, id: i64, dest: String) -> Result<(), AppError> {
+    let detail = invoices::get_detail(&db, id)
+        .await?
+        .ok_or_else(|| AppError::Message("invoice not found".into()))?;
+    let pays = payments::list_for_invoice(&db, id).await?;
+    if pays.is_empty() {
+        return Err(AppError::Message(
+            "no payments recorded — nothing to receipt".into(),
+        ));
+    }
+    let s = settings::get(&db).await?;
+    let customer = customers::get(&db, detail.invoice.customer_id).await?;
+    let cur = &s.currency;
+
+    let number = detail
+        .invoice
+        .number
+        .clone()
+        .unwrap_or_else(|| format!("Draft #{}", detail.invoice.id));
+    let today = rmb_data::db::today_local(&db).await?;
+
+    // Payments listed oldest-first on the receipt.
+    let lines: Vec<[String; 4]> = pays
+        .iter()
+        .rev()
+        .map(|p| {
+            let method = if p.method.is_empty() {
+                "payment".to_string()
+            } else {
+                p.method.clone()
+            };
+            [
+                format!(
+                    "Payment — {method}{}",
+                    if p.reference.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", p.reference)
+                    }
+                ),
+                String::new(),
+                p.date.chars().take(10).collect(),
+                pdf::fmt_money(p.amount_minor, cur),
+            ]
+        })
+        .collect();
+
+    let totals: Vec<[String; 2]> = vec![
+        [
+            format!("Invoice total ({number})"),
+            pdf::fmt_money(detail.invoice.total_minor, cur),
+        ],
+        ["Paid".into(), pdf::fmt_money(detail.amount_paid_minor, cur)],
+        [
+            "Balance".into(),
+            pdf::fmt_money(detail.invoice.total_minor - detail.amount_paid_minor, cur),
+        ],
+    ];
+
+    let data = json!({
+        "title": format!("Receipt — {number}"),
+        "kind": "RECEIPT",
+        "business_name": s.business_name,
+        "business_lines": business_lines(&s),
+        "meta": [format!("For {number}"), format!("Date: {today}")],
+        "customer_block": customer_lines(customer.as_ref()),
+        "columns": ["Payment", "", "Date", "Amount"],
+        "lines": lines,
+        "totals": totals,
+        "notes": "Thank you for your payment.",
     })
     .to_string();
 

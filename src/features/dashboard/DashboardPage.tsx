@@ -1,9 +1,11 @@
 import type { ComponentType } from "react";
-import { AlertTriangle, Banknote, CheckCircle2, FileText, Hourglass } from "lucide-react";
+import { AlertTriangle, Banknote, CheckCircle2, FileText, Hourglass, Sparkles } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcQuery } from "@/lib/useIpc";
 import { useMoneyFormat } from "@/lib/money";
+import { useNav } from "@/app/nav";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -47,18 +49,39 @@ function Stat({
 
 export function DashboardPage() {
   const money = useMoneyFormat();
+  const goTo = useNav();
   const q = useIpcQuery(["dashboard"], () => ipc.dashboardSummary());
   const recentQ = useIpcQuery(["invoices"], () => ipc.listInvoices());
+  const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
 
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
 
   const s = q.data;
   const recent = (recentQ.data ?? []).slice(0, 6);
+  const needsSetup = settingsQ.data !== undefined && settingsQ.data.business_name.trim() === "";
 
   return (
     <div className="space-y-6">
       <PageHeader title="Dashboard" description="Where the business stands right now." />
+
+      {needsSetup && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-6">
+            <div className="flex items-start gap-3">
+              <Sparkles className="mt-0.5 size-5 text-primary" aria-hidden />
+              <div>
+                <p className="font-medium">Welcome to RMB</p>
+                <p className="text-sm text-muted-foreground">
+                  Set your business name, currency, and tax rates first — they appear on every quote
+                  and invoice you send.
+                </p>
+              </div>
+            </div>
+            <Button onClick={() => goTo("settings")}>Set up your business</Button>
+          </CardContent>
+        </Card>
+      )}
 
       {s && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">

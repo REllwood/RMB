@@ -9,4 +9,6 @@ pub mod jobs;
 pub mod meta;
 pub mod payments;
 pub mod quotes;
+pub mod recurring;
+pub mod reports;
 pub mod settings;

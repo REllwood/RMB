@@ -238,3 +238,67 @@ export interface CustomerHistory {
   jobs: Job[];
   invoices: InvoiceRow[];
 }
+
+export interface RecurringInvoice {
+  id: number;
+  customer_id: number;
+  frequency: string; // weekly|fortnightly|monthly|quarterly|yearly
+  next_date: string;
+  end_date: string | null;
+  due_days: number | null;
+  notes: string;
+  active: boolean;
+  created_at: string;
+}
+
+/** List row: schedule fields flattened + computed template total. */
+export type RecurringListRow = RecurringInvoice & { total_minor: number };
+
+export interface RecurringLineRow {
+  id: number;
+  item_id: number | null;
+  description: string;
+  quantity: string;
+  unit_price_minor: number;
+  tax_rate_name: string;
+  tax_rate_bp: number;
+  tax_inclusive: boolean;
+}
+
+export interface RecurringDetail {
+  schedule: RecurringInvoice;
+  lines: RecurringLineRow[];
+}
+
+export interface RecurringInput {
+  customer_id: number;
+  frequency: string;
+  next_date: string;
+  end_date: string | null;
+  due_days: number | null;
+  notes: string;
+}
+
+export interface TaxSummaryRow {
+  tax_rate_name: string;
+  tax_rate_bp: number;
+  net_minor: number;
+  tax_minor: number;
+  gross_minor: number;
+}
+
+export interface MonthlySalesRow {
+  month: string; // YYYY-MM
+  invoice_count: number;
+  net_minor: number;
+  tax_minor: number;
+  gross_minor: number;
+}
+
+export interface CustomerSalesRow {
+  customer_id: number;
+  name: string;
+  invoice_count: number;
+  gross_minor: number;
+  paid_minor: number;
+}

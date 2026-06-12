@@ -1,0 +1,201 @@
+//! Reporting + CSV export commands. Aggregation happens in SQL (rmb-data); this layer formats
+//! CSV (RFC-4180 quoting, amounts as plain major-unit decimals) and writes the chosen file.
+
+use rmb_data::db::Db;
+use rmb_data::repos::customers;
+use rmb_data::repos::reports::{self, CustomerSalesRow, MonthlySalesRow, TaxSummaryRow};
+use tauri::State;
+
+use crate::error::AppError;
+
+#[tauri::command]
+pub async fn report_tax_summary(
+    db: State<'_, Db>,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<Vec<TaxSummaryRow>, AppError> {
+    Ok(reports::tax_summary(&db, from.as_deref(), to.as_deref()).await?)
+}
+
+#[tauri::command]
+pub async fn report_sales_monthly(
+    db: State<'_, Db>,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<Vec<MonthlySalesRow>, AppError> {
+    Ok(reports::sales_by_month(&db, from.as_deref(), to.as_deref()).await?)
+}
+
+#[tauri::command]
+pub async fn report_sales_customers(
+    db: State<'_, Db>,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<Vec<CustomerSalesRow>, AppError> {
+    Ok(reports::sales_by_customer(&db, from.as_deref(), to.as_deref()).await?)
+}
+
+/// RFC-4180 field quoting: wrap when the field contains a comma, quote, or newline; double
+/// embedded quotes.
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn csv_line(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|f| csv_field(f))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Plain major-unit decimal for spreadsheets (no symbol, no grouping): 12345 → "123.45".
+fn csv_amount(minor: i64) -> String {
+    let sign = if minor < 0 { "-" } else { "" };
+    let abs = minor.unsigned_abs();
+    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
+fn write_csv(dest: &str, header: &[&str], rows: Vec<Vec<String>>) -> Result<(), AppError> {
+    let mut out = String::new();
+    out.push_str(&csv_line(
+        &header.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
+    ));
+    out.push_str("\r\n");
+    for row in rows {
+        out.push_str(&csv_line(&row));
+        out.push_str("\r\n");
+    }
+    std::fs::write(dest, out).map_err(|e| AppError::Message(e.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn export_invoices_csv(
+    db: State<'_, Db>,
+    dest: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<(), AppError> {
+    let rows = reports::invoice_export_rows(&db, from.as_deref(), to.as_deref()).await?;
+    let data = rows
+        .into_iter()
+        .map(|r| {
+            vec![
+                r.number.unwrap_or_else(|| format!("Draft #{}", r.id)),
+                r.customer,
+                r.status,
+                r.issue_date.unwrap_or_default(),
+                r.due_date.unwrap_or_default(),
+                csv_amount(r.subtotal_minor),
+                csv_amount(r.tax_minor),
+                csv_amount(r.total_minor),
+                csv_amount(r.paid_minor),
+                csv_amount(r.total_minor - r.paid_minor),
+            ]
+        })
+        .collect();
+    write_csv(
+        &dest,
+        &[
+            "number",
+            "customer",
+            "status",
+            "issue_date",
+            "due_date",
+            "subtotal",
+            "tax",
+            "total",
+            "paid",
+            "balance",
+        ],
+        data,
+    )
+}
+
+#[tauri::command]
+pub async fn export_payments_csv(
+    db: State<'_, Db>,
+    dest: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<(), AppError> {
+    let rows = reports::payment_export_rows(&db, from.as_deref(), to.as_deref()).await?;
+    let data = rows
+        .into_iter()
+        .map(|r| {
+            vec![
+                r.date,
+                csv_amount(r.amount_minor),
+                r.method,
+                r.reference,
+                r.invoice_number.unwrap_or_default(),
+                r.customer,
+            ]
+        })
+        .collect();
+    write_csv(
+        &dest,
+        &[
+            "date",
+            "amount",
+            "method",
+            "reference",
+            "invoice",
+            "customer",
+        ],
+        data,
+    )
+}
+
+#[tauri::command]
+pub async fn export_customers_csv(db: State<'_, Db>, dest: String) -> Result<(), AppError> {
+    let rows = customers::list(&db, None).await?;
+    let data = rows
+        .into_iter()
+        .map(|c| {
+            vec![
+                c.name,
+                c.email,
+                c.phone,
+                c.billing_address,
+                c.notes,
+                c.created_at,
+            ]
+        })
+        .collect();
+    write_csv(
+        &dest,
+        &[
+            "name",
+            "email",
+            "phone",
+            "billing_address",
+            "notes",
+            "created_at",
+        ],
+        data,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_escaping_and_amounts() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("has,comma"), "\"has,comma\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("line\nbreak"), "\"line\nbreak\"");
+        assert_eq!(csv_line(&["a,b".into(), "c".into()]), "\"a,b\",c");
+        assert_eq!(csv_amount(12345), "123.45");
+        assert_eq!(csv_amount(5), "0.05");
+        assert_eq!(csv_amount(-12345), "-123.45");
+        assert_eq!(csv_amount(0), "0.00");
+    }
+}

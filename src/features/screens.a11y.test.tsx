@@ -65,6 +65,16 @@ vi.mock("@/lib/ipc", () => ({
       paid_count: 0,
       low_stock: [{ id: 1, name: "Widget", qty_on_hand: 3, reorder_point: 5 }],
     }),
+    reportTaxSummary: async () => [
+      { tax_rate_name: "VAT 20%", tax_rate_bp: 2000, net_minor: 1000, tax_minor: 200, gross_minor: 1200 },
+    ],
+    reportSalesMonthly: async () => [
+      { month: "2026-06", invoice_count: 1, net_minor: 1000, tax_minor: 200, gross_minor: 1200 },
+    ],
+    reportSalesCustomers: async () => [
+      { customer_id: 1, name: "Jane Doe", invoice_count: 1, gross_minor: 1200, paid_minor: 500 },
+    ],
+    listRecurring: async () => [],
   },
 }));
 
@@ -75,6 +85,7 @@ import { SettingsPage } from "@/features/settings/SettingsPage";
 import { InvoicesPage } from "@/features/invoices/InvoicesPage";
 import { QuotesPage } from "@/features/quotes/QuotesPage";
 import { JobsPage } from "@/features/jobs/JobsPage";
+import { ReportsPage } from "@/features/reports/ReportsPage";
 
 afterEach(cleanup);
 
@@ -123,6 +134,12 @@ describe("screen accessibility (WCAG-AA, jsdom)", () => {
   it("Jobs", async () => {
     renderPage(<JobsPage />);
     await screen.findByText("Rewire");
+    await expectNoA11yViolations(document.body);
+  });
+
+  it("Reports", async () => {
+    renderPage(<ReportsPage />);
+    await screen.findByText("VAT 20%");
     await expectNoA11yViolations(document.body);
   });
 });

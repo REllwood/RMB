@@ -39,3 +39,10 @@ pub async fn open(path: &Path) -> Result<Db, DataError> {
     MIGRATOR.run(&pool).await?;
     Ok(pool)
 }
+
+/// Today as `YYYY-MM-DD` in the machine's local timezone (business dates are local, not UTC).
+pub async fn today_local(db: &Db) -> Result<String, DataError> {
+    Ok(sqlx::query_scalar("SELECT date('now','localtime')")
+        .fetch_one(db)
+        .await?)
+}

@@ -4,9 +4,10 @@ A **free, open-source desktop app** that gives any small business one place to r
 customers, catalog, stock, quotes, invoices, payments — with **all data on your own machine**. No
 subscriptions, no cloud, works fully offline.
 
-> Status: **v1 complete & tested.** Customers, catalog, quotes, jobs/timekeeping, invoices, payments,
-> PDF export, and the dashboard all work end to end — **73 tests** (money/tax/inventory property-tested,
-> every screen accessibility-tested). See [Roadmap](#roadmap) for what's next.
+> Status: **v1 complete & tested.** Customers, catalog, quotes, jobs/timekeeping, invoices (incl.
+> recurring), payments, reports, PDF export, and the dashboard all work end to end — **80 tests**
+> including a full golden-path E2E (money/tax/inventory property-tested, every screen
+> accessibility-tested). See [Roadmap](#roadmap) for what's next.
 
 ## What it does today
 
@@ -27,13 +28,19 @@ subscriptions, no cloud, works fully offline.
   exclusive, multi-rate), due dates, and **overdue** flags. Drafts are editable/deletable; **issuing**
   assigns a **gapless number**, **freezes a snapshot**, and **decrements stock once**; issued invoices
   are immutable (correct via **void + reissue**).
+- **Recurring invoices** — weekly / fortnightly / monthly / quarterly / yearly schedules that
+  auto-draft when due (with catch-up after time away); you still review and issue each one.
 - **Payments** — record partial/full payments with method + reference; status flows unpaid → part-paid
-  → paid with a live balance, and a mis-entered payment can be **removed** (status recalculates).
-- **PDF export** — branded (logo + business details), fully offline invoice & quote PDFs (Typst with
-  embedded fonts — identical on every OS).
-- **Dashboard** — money owed, **overdue count**, invoice counts, low stock, recent activity.
-- **Backup & restore** — your data is a single SQLite file; one-click safe backup (`VACUUM INTO`) and
-  integrity-checked restore.
+  → paid with a live balance, a mis-entered payment can be **removed** (status recalculates), and any
+  paid invoice can produce a **receipt PDF**.
+- **Reports & exports** — tax collected per rate for any period (your BAS / VAT-return numbers), sales
+  by month and by customer, plus **CSV exports** (invoices, payments, customers) for your accountant.
+- **PDF export** — branded (logo + business details), fully offline invoice, quote & receipt PDFs
+  (Typst with embedded fonts — identical on every OS).
+- **Dashboard** — money owed, **overdue count**, invoice counts, low stock, recent activity, and a
+  first-run setup guide.
+- **Backup & restore** — your data is a single SQLite file; an **automatic rotating backup** on every
+  launch (last 7 kept), one-click safe manual backup (`VACUUM INTO`), and integrity-checked restore.
 
 Everything is **keyboard-accessible** (WCAG 2.1 AA target) with light + dark themes.
 
@@ -80,7 +87,7 @@ export a copy, and **Restore** to load one. See [docs/INSTALL.md](docs/INSTALL.m
 Built on a general core designed to grow Odoo-style, one module at a time. Not yet implemented:
 
 - **Email** sending, **online card payments** (Stripe), scheduling/dispatch.
-- **Double-entry accounting**, purchasing / supplier bills, recurring invoices.
+- **Double-entry accounting**, purchasing / supplier bills.
 - **Mobile app + multi-user sync** (the architecture is local-first to allow this later).
 - **Code signing** for distribution (the release CI is already wired for it).
 
