@@ -31,7 +31,8 @@ dist-ssr
 /playwright-report
 /e2e/.cache
 
-# Forge planning trail (internal; remove this line to version the trail)
-/.forge/
+# Local notes and scratch work — never part of the app
+/notes/
+/scratch/
 
 # NOTE: proptest-regressions/ is intentionally NOT ignored (commit shrunk counterexamples).

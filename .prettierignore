@@ -5,4 +5,3 @@ src-tauri/gen
 src-tauri/icons
 package-lock.json
 *.md
-.forge
