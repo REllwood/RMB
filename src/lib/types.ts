@@ -257,7 +257,7 @@ export interface RecurringInvoice {
 }
 
 /** List row: schedule fields flattened + computed template total. */
-export type RecurringListRow = RecurringInvoice & { total_minor: number };
+export type RecurringListRow = RecurringInvoice & { total_minor: number; problem: string | null };
 
 export interface RecurringLineRow {
   id: number;

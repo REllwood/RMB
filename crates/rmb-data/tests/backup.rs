@@ -128,24 +128,45 @@ async fn auto_backup_writes_and_rotates(pool: Db) -> Result<(), DataError> {
     assert!(again.exists());
     backup::validate_backup(&again).await?;
 
-    // Rotation keeps only the newest N auto files (and ignores other files).
+    // Rotation keeps the newest N auto files plus the newest file of each earlier day, and ignores
+    // other files. Nine same-day files on 2020-01-01, one on each of two earlier days.
     for i in 0..9 {
         std::fs::write(dir.join(format!("auto-20200101-00000{i}.sqlite")), b"x").unwrap();
     }
+    std::fs::write(dir.join("auto-20191230-120000.sqlite"), b"x").unwrap();
+    std::fs::write(dir.join("auto-20191231-080000.sqlite"), b"x").unwrap();
+    std::fs::write(dir.join("auto-20191231-090000.sqlite"), b"x").unwrap();
     std::fs::write(dir.join("manual-keep.sqlite"), b"x").unwrap();
-    backup::prune_auto_backups(&dir, 3);
-    let autos = std::fs::read_dir(&dir)
+    backup::prune_auto_backups(&dir, 3, None);
+    let mut autos: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("auto-"))
-        .count();
-    assert_eq!(autos, 3);
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("auto-"))
+        .collect();
+    autos.sort();
+    // The two real backups (named with today's date) and the newest 2020-01-01 file fill the
+    // newest-3 tier; each earlier day keeps exactly its newest file.
+    assert!(autos.contains(&"auto-20191230-120000.sqlite".to_string()));
+    assert!(autos.contains(&"auto-20191231-090000.sqlite".to_string()));
+    assert!(!autos.contains(&"auto-20191231-080000.sqlite".to_string()));
     assert!(
         dir.join("manual-keep.sqlite").exists(),
         "non-auto files untouched"
     );
-    // The real (newest-named) backup survives pruning.
-    assert!(written.exists());
+    assert!(written.exists() && again.exists());
+
+    // The file just written is never pruned, even if a wrong clock gives it the oldest name.
+    let old_named = dir.join("auto-19990101-000000.sqlite");
+    std::fs::write(&old_named, b"x").unwrap();
+    for day in 1..=40 {
+        std::fs::write(dir.join(format!("auto-2021{:04}-000000.sqlite", day)), b"x").unwrap();
+    }
+    backup::prune_auto_backups(&dir, 3, Some(&old_named));
+    assert!(
+        old_named.exists(),
+        "the backup just written must survive rotation"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())

@@ -14,7 +14,7 @@ use sqlx::{ConnectOptions, Connection};
 use crate::db::Db;
 use crate::error::DataError;
 
-static AUTO_BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Write a consistent single-file backup of the database to `dest` (`VACUUM INTO`).
 pub async fn backup(db: &Db, dest: &Path) -> Result<(), DataError> {
@@ -42,53 +42,79 @@ pub async fn checkpoint(db: &Db) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Write a uniquely named rotating automatic backup into `dir`, keeping the newest `keep` files.
+/// A fresh, never-used backup path in `dir`: `{prefix}-{UTC timestamp}-{pid}-{sequence}.sqlite`.
+/// UTC keeps names in true chronological order across daylight-saving changes and travel, which
+/// rotation relies on. The process ID and an in-process sequence keep rapid or concurrent launches
+/// from colliding.
+pub async fn unique_backup_path(
+    db: &Db,
+    dir: &Path,
+    prefix: &str,
+) -> Result<std::path::PathBuf, DataError> {
+    let stamp: String = sqlx::query_scalar("SELECT strftime('%Y%m%d-%H%M%f','now')")
+        .fetch_one(db)
+        .await?;
+    let process_id = std::process::id();
+    Ok(loop {
+        let sequence = BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = dir.join(format!(
+            "{prefix}-{stamp}-{process_id}-{sequence:04}.sqlite"
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+    })
+}
+
+/// Write a rotating automatic backup into `dir` and prune older ones (see [`prune_auto_backups`]).
 /// Runs at app startup as cheap data-loss insurance for users who never press the manual backup
-/// button. Milliseconds, the process ID, and an in-process sequence prevent rapid or concurrent
-/// launches from reusing an older backup filename.
+/// button.
 pub async fn auto_backup(
     db: &Db,
     dir: &Path,
     keep: usize,
 ) -> Result<std::path::PathBuf, DataError> {
     std::fs::create_dir_all(dir).map_err(|e| DataError::Other(format!("backup dir: {e}")))?;
-    let stamp: String = sqlx::query_scalar("SELECT strftime('%Y%m%d-%H%M%f','now','localtime')")
-        .fetch_one(db)
-        .await?;
-    let process_id = std::process::id();
-    let dest = loop {
-        let sequence = AUTO_BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate = dir.join(format!("auto-{stamp}-{process_id}-{sequence:04}.sqlite"));
-        if !candidate.exists() {
-            break candidate;
-        }
-    };
+    let dest = unique_backup_path(db, dir, "auto").await?;
     backup(db, &dest).await?;
-    prune_auto_backups(dir, keep);
+    prune_auto_backups(dir, keep, Some(&dest));
     Ok(dest)
 }
 
-/// Delete all but the newest `keep` `auto-*.sqlite` files (timestamped names sort newest-last).
+/// How many distinct days keep their newest automatic backup, on top of the newest `keep` files.
+const DAILY_BACKUP_DAYS: usize = 30;
+
+/// Delete old `auto-*.sqlite` files. Kept: the newest `keep` files, the newest file from each of the
+/// last 30 days that have backups, and `protect` (the backup just written). The daily tier means a
+/// run of launches against a bad or empty database cannot rotate away every copy of the real data.
 /// Best-effort: rotation must never take the app down.
-pub fn prune_auto_backups(dir: &Path, keep: usize) {
+pub fn prune_auto_backups(dir: &Path, keep: usize, protect: Option<&Path>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut autos: Vec<_> = entries
+    let mut autos: Vec<(String, std::path::PathBuf)> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("auto-") && n.ends_with(".sqlite"))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_owned();
+            (name.starts_with("auto-") && name.ends_with(".sqlite")).then_some((name, p))
         })
         .collect();
+    // Timestamped names sort oldest-first; walk newest-first.
     autos.sort();
-    if autos.len() > keep {
-        let excess = autos.len() - keep;
-        for old in &autos[..excess] {
-            let _ = std::fs::remove_file(old);
+    autos.reverse();
+    let mut days_kept: Vec<String> = Vec::new();
+    for (index, (name, path)) in autos.iter().enumerate() {
+        let day = name.get(5..13).unwrap_or_default().to_owned();
+        let newest_of_day = !days_kept.contains(&day) && days_kept.len() < DAILY_BACKUP_DAYS;
+        if newest_of_day {
+            days_kept.push(day);
         }
+        let protected = protect.is_some_and(|p| p == path.as_path());
+        if index < keep || newest_of_day || protected {
+            continue;
+        }
+        let _ = std::fs::remove_file(path);
     }
 }
 
