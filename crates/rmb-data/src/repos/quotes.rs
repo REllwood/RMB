@@ -25,6 +25,23 @@ pub struct QuoteRow {
     pub notes: String,
     pub converted_invoice_id: Option<i64>,
     pub created_at: String,
+    /// Kept for deleted customers so the quote still says who it was for.
+    pub customer_name: String,
+    /// The number of the invoice it was converted to, once that invoice is issued.
+    pub converted_invoice_number: Option<String>,
+}
+
+/// `SELECT` for [`QuoteRow`] (a macro so queries stay static strings for sqlx); callers append
+/// `WHERE`/`ORDER BY` against the alias `q`.
+macro_rules! quote_row_select {
+    () => {
+        "SELECT q.id, q.customer_id, q.number, q.status, q.valid_until, q.subtotal_minor, \
+         q.tax_minor, q.total_minor, q.notes, q.converted_invoice_id, \
+         datetime(q.created_at, 'localtime') AS created_at, COALESCE(c.name, '') AS customer_name, \
+         ci.number AS converted_invoice_number \
+         FROM quote q LEFT JOIN customer c ON c.id = q.customer_id \
+         LEFT JOIN invoice ci ON ci.id = q.converted_invoice_id"
+    };
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -190,32 +207,29 @@ pub async fn update_draft(
 }
 
 pub async fn list(db: &Db) -> Result<Vec<QuoteRow>, DataError> {
-    Ok(sqlx::query_as::<_, QuoteRow>(
-        "SELECT id, customer_id, number, status, valid_until, subtotal_minor, tax_minor, \
-         total_minor, notes, converted_invoice_id, created_at FROM quote \
-         WHERE deleted_at IS NULL ORDER BY id DESC",
-    )
+    Ok(sqlx::query_as::<_, QuoteRow>(concat!(
+        quote_row_select!(),
+        " WHERE q.deleted_at IS NULL ORDER BY q.id DESC"
+    ))
     .fetch_all(db)
     .await?)
 }
 
 pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<QuoteRow>, DataError> {
-    Ok(sqlx::query_as::<_, QuoteRow>(
-        "SELECT id, customer_id, number, status, valid_until, subtotal_minor, tax_minor, \
-         total_minor, notes, converted_invoice_id, created_at FROM quote \
-         WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC",
-    )
+    Ok(sqlx::query_as::<_, QuoteRow>(concat!(
+        quote_row_select!(),
+        " WHERE q.customer_id = ? AND q.deleted_at IS NULL ORDER BY q.id DESC"
+    ))
     .bind(customer_id)
     .fetch_all(db)
     .await?)
 }
 
 pub async fn get_detail(db: &Db, id: i64) -> Result<Option<QuoteDetail>, DataError> {
-    let quote = sqlx::query_as::<_, QuoteRow>(
-        "SELECT id, customer_id, number, status, valid_until, subtotal_minor, tax_minor, \
-         total_minor, notes, converted_invoice_id, created_at FROM quote \
-         WHERE id = ? AND deleted_at IS NULL",
-    )
+    let quote = sqlx::query_as::<_, QuoteRow>(concat!(
+        quote_row_select!(),
+        " WHERE q.id = ? AND q.deleted_at IS NULL"
+    ))
     .bind(id)
     .fetch_optional(db)
     .await?;

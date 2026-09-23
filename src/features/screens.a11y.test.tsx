@@ -25,6 +25,7 @@ vi.mock("@/lib/ipc", () => ({
       quote_next_seq: 1,
       number_pad: 4,
       default_tax_rate_id: null,
+      default_due_days: null,
       currency_locked: false,
     }),
     listTaxRates: async () => [

@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
 import { cn } from "@/lib/utils";
+import { invoiceStatus } from "@/features/invoices/status";
 
 type IconType = ComponentType<{ className?: string }>;
 
@@ -30,7 +31,7 @@ function Stat({
       <CardContent className="flex items-start justify-between gap-3 pt-6">
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-1 truncate text-2xl font-semibold tracking-tight tabular-nums">
+          <p className="mt-1 text-2xl font-semibold tracking-tight break-words tabular-nums">
             {value}
           </p>
         </div>
@@ -111,7 +112,7 @@ export function DashboardPage() {
       )}
 
       {s && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
           <Stat
             label="Money owed to you"
             value={money(s.outstanding_minor)}
@@ -136,19 +137,35 @@ export function DashboardPage() {
             <CardTitle>Recent invoices</CardTitle>
           </CardHeader>
           <CardContent>
-            {recent.length === 0 ? (
+            {recentQ.error ? (
+              <ErrorState error={recentQ.error} onRetry={() => recentQ.refetch()} />
+            ) : recent.length === 0 ? (
               <p className="text-sm text-muted-foreground">No invoices yet.</p>
             ) : (
               <ul className="divide-y">
-                {recent.map((inv) => (
-                  <li key={inv.id} className="flex items-center justify-between py-2 text-sm">
-                    <span className="font-medium">{inv.number ?? `Draft #${inv.id}`}</span>
-                    <span className="flex items-center gap-3">
-                      <span className="tabular-nums">{money(inv.total_minor)}</span>
-                      <Badge variant="outline">{inv.status.replace("_", "-")}</Badge>
-                    </span>
-                  </li>
-                ))}
+                {recent.map((inv) => {
+                  const status = invoiceStatus(inv);
+                  return (
+                    <li key={inv.id}>
+                      <button
+                        type="button"
+                        onClick={() => goTo("invoices", inv.id)}
+                        className="flex w-full items-center justify-between gap-3 rounded-md px-1 py-2 text-left text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                      >
+                        <span className="min-w-0">
+                          <span className="font-medium">{inv.number ?? `Draft #${inv.id}`}</span>
+                          <span className="block truncate text-muted-foreground">
+                            {inv.customer_name || "—"}
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-3">
+                          <span className="tabular-nums">{money(inv.total_minor)}</span>
+                          <Badge variant={status.variant}>{status.label}</Badge>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>
@@ -164,12 +181,19 @@ export function DashboardPage() {
             ) : (
               <ul className="divide-y">
                 {s.low_stock.map((it) => (
-                  <li key={it.id} className="flex items-center justify-between py-2 text-sm">
-                    <span className="font-medium">{it.name}</span>
-                    <span className="flex items-center gap-2">
-                      {it.qty_on_hand} left
-                      <Badge variant="warning">Low</Badge>
-                    </span>
+                  <li key={it.id}>
+                    <button
+                      type="button"
+                      onClick={() => goTo("catalog")}
+                      className="flex w-full items-center justify-between rounded-md px-1 py-2 text-left text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                    >
+                      <span className="font-medium">{it.name}</span>
+                      <span className="flex items-center gap-2">
+                        {it.qty_on_hand} left
+                        {it.reorder_point !== null && ` (reorder at ${it.reorder_point})`}
+                        <Badge variant="warning">Low</Badge>
+                      </span>
+                    </button>
                   </li>
                 ))}
               </ul>

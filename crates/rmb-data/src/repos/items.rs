@@ -121,11 +121,11 @@ pub struct StockMovement {
 }
 
 pub async fn list(db: &Db, search: Option<&str>) -> Result<Vec<Item>, DataError> {
-    let like = format!("%{}%", search.unwrap_or("").trim());
+    let like = crate::repos::like_pattern(search);
     Ok(sqlx::query_as::<_, Item>(
         "SELECT id, kind, name, sku, unit, default_price_minor, default_tax_rate_id, tracked, \
          qty_on_hand, reorder_point FROM item WHERE deleted_at IS NULL \
-         AND (name LIKE ?1 OR sku LIKE ?1) ORDER BY name",
+         AND (name LIKE ?1 ESCAPE '\\' OR sku LIKE ?1 ESCAPE '\\') ORDER BY name",
     )
     .bind(like)
     .fetch_all(db)

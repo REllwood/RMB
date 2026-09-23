@@ -2,8 +2,9 @@ import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { FileDown, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 
-import { useView } from "@/app/nav";
+import { useNav, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
+import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { InvoiceDetail, InvoiceRow, Payment } from "@/lib/types";
 import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
@@ -44,7 +45,9 @@ function StatusBadge({ inv }: { inv: Pick<InvoiceRow, "status" | "due_date"> }) 
 }
 
 export function InvoicesPage() {
-  const [view, setView] = useView<View>({ mode: "list" });
+  const [view, setView] = useView<View>((recordId) =>
+    recordId === null ? { mode: "list" } : { mode: "detail", id: recordId },
+  );
 
   return (
     <div className="space-y-6">
@@ -138,6 +141,7 @@ function InvoiceList({ onOpen }: { onOpen: (id: number) => void }) {
                     e.stopPropagation();
                     onOpen(inv.id);
                   }}
+                  aria-label={`Open invoice ${inv.number ?? `draft ${inv.id}`}`}
                 >
                   Open
                 </Button>
@@ -299,6 +303,7 @@ function InvoiceDetailView({
 }) {
   const toast = useToast();
   const money = useMoneyFormat();
+  const goTo = useNav();
   const q = useIpcQuery(["invoice", id], () => ipc.getInvoice(id));
   const isDraft = q.data?.invoice.status === "draft";
   const paymentsQ = useIpcQuery(
@@ -307,14 +312,14 @@ function InvoiceDetailView({
     !!q.data && !isDraft,
   );
 
-  const refresh: unknown[][] = [["invoice", id], ["invoices"], ["payments", id], ["dashboard"]];
-  const issue = useIpcMutation(() => ipc.issueInvoice(id), [...refresh, ["items"]], {
+  const refresh = DOCUMENT_KEYS;
+  const issue = useIpcMutation(() => ipc.issueInvoice(id), refresh, {
     successMessage: "Invoice issued",
   });
-  const voidMut = useIpcMutation(() => ipc.voidInvoice(id), [...refresh, ["items"]], {
+  const voidMut = useIpcMutation(() => ipc.voidInvoice(id), refresh, {
     successMessage: "Invoice voided — stock restored",
   });
-  const deleteDraft = useIpcMutation(() => ipc.deleteInvoiceDraft(id), [["invoices"]], {
+  const deleteDraft = useIpcMutation(() => ipc.deleteInvoiceDraft(id), refresh, {
     successMessage: "Draft deleted",
   });
   const pay = useIpcMutation(
@@ -396,7 +401,34 @@ function InvoiceDetailView({
               {invoice.customer_name || "—"}
               {invoice.issue_date && ` · issued ${invoice.issue_date}`}
               {invoice.due_date && invoice.status !== "void" && ` · due ${invoice.due_date}`}
+              {invoice.status === "draft" &&
+                invoice.due_days !== null &&
+                ` · due ${invoice.due_days} day${invoice.due_days === 1 ? "" : "s"} after issue`}
               {invoice.void_date && ` · voided ${invoice.void_date}`}
+            </p>
+            <p className="flex flex-wrap gap-x-3 text-sm">
+              {invoice.source_quote_id !== null && (
+                <button
+                  type="button"
+                  className="text-primary underline-offset-4 hover:underline"
+                  onClick={() =>
+                    invoice.source_quote_id !== null && goTo("quotes", invoice.source_quote_id)
+                  }
+                >
+                  From a quote
+                </button>
+              )}
+              {invoice.source_job_id !== null && (
+                <button
+                  type="button"
+                  className="text-primary underline-offset-4 hover:underline"
+                  onClick={() =>
+                    invoice.source_job_id !== null && goTo("jobs", invoice.source_job_id)
+                  }
+                >
+                  From a job
+                </button>
+              )}
             </p>
           </div>
           <StatusBadge inv={invoice} />

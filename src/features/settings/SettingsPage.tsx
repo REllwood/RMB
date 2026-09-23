@@ -90,6 +90,7 @@ export function SettingsPage() {
   const [taxPct, setTaxPct] = useState("");
   const [taxInclusive, setTaxInclusive] = useState<boolean | null>(null);
   const [padText, setPadText] = useState<string | null>(null);
+  const [termsText, setTermsText] = useState<string | null>(null);
   const [taxDraft, setTaxDraft] = useState<TaxDraft | null>(null);
   const [presetCountry, setPresetCountry] = useState("");
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
@@ -105,6 +106,12 @@ export function SettingsPage() {
     padText !== null && parseWholeNumber(padText, { min: 1, max: 12 }) === null
       ? "Enter a whole number from 1 to 12"
       : undefined;
+  const termsError =
+    termsText !== null &&
+    termsText.trim() !== "" &&
+    parseWholeNumber(termsText, { min: 0, max: 3_650 }) === null
+      ? "Enter a whole number of days from 0 to 3,650, or leave blank"
+      : undefined;
 
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
@@ -116,6 +123,7 @@ export function SettingsPage() {
     try {
       await saveMut.mutateAsync(form);
       setPadText(null);
+      setTermsText(null);
       setStatus("Settings saved.");
     } catch {
       // useIpcMutation has already shown the backend error.
@@ -333,6 +341,30 @@ export function SettingsPage() {
               />
             )}
           </Field>
+          <Field
+            label="Default payment terms (days)"
+            hint="New invoices without a due date become due this many days after they're issued. Blank for none."
+            error={termsError}
+          >
+            {(p) => (
+              <Input
+                {...p}
+                inputMode="numeric"
+                className="w-24"
+                value={
+                  termsText ?? (form.default_due_days === null ? "" : String(form.default_due_days))
+                }
+                onChange={(e) => {
+                  setTermsText(e.target.value);
+                  const days =
+                    e.target.value.trim() === ""
+                      ? null
+                      : parseWholeNumber(e.target.value, { min: 0, max: 3_650 });
+                  if (e.target.value.trim() === "" || days !== null) set("default_due_days", days);
+                }}
+              />
+            )}
+          </Field>
           <Field label="Tax label" hint="e.g. VAT, GST, Sales Tax">
             {(p) => (
               <Input
@@ -436,7 +468,7 @@ export function SettingsPage() {
         <CardContent className="flex items-center gap-3 border-t pt-4">
           <Button
             onClick={onSave}
-            disabled={Boolean(padError)}
+            disabled={Boolean(padError || termsError)}
             loading={saveMut.isPending}
             loadingLabel="Saving…"
           >

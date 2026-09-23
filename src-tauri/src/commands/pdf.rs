@@ -592,6 +592,7 @@ mod tests {
             quote_next_seq: 2,
             number_pad: 4,
             default_tax_rate_id: None,
+            default_due_days: None,
             currency_locked: false,
         }
     }

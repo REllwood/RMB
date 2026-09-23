@@ -18,6 +18,8 @@ export interface Settings {
   number_pad: number;
   /** Tax rate new lines start with; null falls back to the first non-zero rate. */
   default_tax_rate_id: number | null;
+  /** Payment terms for new drafts without a due date (days after issue); null for none. */
+  default_due_days: number | null;
   /** Read-only: an invoice has been issued, so the currency can no longer change. */
   currency_locked: boolean;
 }
@@ -106,6 +108,8 @@ export interface InvoiceRow {
   source_job_id: number | null;
   /** Local date it was voided, if it was. */
   void_date: string | null;
+  /** Draft payment terms: due this many days after issue. */
+  due_days: number | null;
   /** Name frozen on the issued invoice (current name for drafts); kept for deleted customers. */
   customer_name: string;
 }
@@ -169,6 +173,10 @@ export interface QuoteRow {
   notes: string;
   converted_invoice_id: number | null;
   created_at: string;
+  /** Kept for deleted customers. */
+  customer_name: string;
+  /** Number of the invoice it converted to, once issued. */
+  converted_invoice_number: string | null;
 }
 
 export type QuoteLineRow = InvoiceLineRow;
@@ -187,6 +195,11 @@ export interface Job {
   status: string;
   source_quote_id: number | null;
   created_at: string;
+  /** Kept for deleted customers. */
+  customer_name: string;
+  /** The live invoice that billed this job, if any. */
+  invoice_id: number | null;
+  invoice_number: string | null;
 }
 
 export interface JobInput {

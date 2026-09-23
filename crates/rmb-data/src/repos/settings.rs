@@ -29,6 +29,9 @@ pub struct Settings {
     /// The tax rate new document lines start with (None: the first non-zero rate).
     #[serde(default)]
     pub default_tax_rate_id: Option<i64>,
+    /// Payment terms for new drafts without a due date: due this many days after issue.
+    #[serde(default)]
+    pub default_due_days: Option<i64>,
     /// Read-only: true once an invoice has been issued, after which the currency can't change
     /// (issued invoices and every total are in that currency).
     #[serde(default)]
@@ -45,7 +48,7 @@ pub async fn get(db: &Db) -> Result<Settings, DataError> {
     Ok(sqlx::query_as::<_, Settings>(
         "SELECT business_name, address, email, phone, logo_path, currency, tax_label, tax_number, \
          prices_tax_inclusive, invoice_prefix, invoice_next_seq, quote_prefix, quote_next_seq, \
-         number_pad, default_tax_rate_id, \
+         number_pad, default_tax_rate_id, default_due_days, \
          EXISTS(SELECT 1 FROM invoice WHERE status <> 'draft') AS currency_locked \
          FROM settings WHERE id = 1",
     )
@@ -93,6 +96,13 @@ pub async fn update(db: &Db, s: &Settings) -> Result<(), DataError> {
             "number padding must be between 1 and 12 digits".into(),
         ));
     }
+    if s.default_due_days
+        .is_some_and(|days| !(0..=3_650).contains(&days))
+    {
+        return Err(DataError::Other(
+            "default payment terms must be between 0 and 3,650 days".into(),
+        ));
+    }
     if let Some(tax_id) = s.default_tax_rate_id {
         let active: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM tax_rate WHERE id = ? AND archived = 0)",
@@ -122,7 +132,7 @@ pub async fn update(db: &Db, s: &Settings) -> Result<(), DataError> {
     let result = sqlx::query(
         "UPDATE settings SET business_name=?, address=?, email=?, phone=?, currency=?, \
          tax_label=?, tax_number=?, prices_tax_inclusive=?, invoice_prefix=?, quote_prefix=?, \
-         number_pad=?, default_tax_rate_id=? WHERE id = 1",
+         number_pad=?, default_tax_rate_id=?, default_due_days=? WHERE id = 1",
     )
     .bind(business_name)
     .bind(address)
@@ -136,6 +146,7 @@ pub async fn update(db: &Db, s: &Settings) -> Result<(), DataError> {
     .bind(quote_prefix)
     .bind(s.number_pad)
     .bind(s.default_tax_rate_id)
+    .bind(s.default_due_days)
     .execute(db)
     .await?;
     if result.rows_affected() != 1 {
