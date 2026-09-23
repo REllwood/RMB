@@ -17,7 +17,7 @@
     "test:coverage": "vitest run --coverage",
     "version:check": "node scripts/check-versions.mjs",
     "ipc:check": "node scripts/check-ipc-surface.mjs",
-    "check": "npm run version:check && npm run ipc:check && tsc --noEmit && npm run lint && vitest run && vite build"
+    "check": "npm run version:check && npm run ipc:check && tsc --noEmit && npm run lint && npm run format:check && vitest run && vite build"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
