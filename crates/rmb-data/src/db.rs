@@ -19,14 +19,17 @@ pub type Db = SqlitePool;
 /// new one (a checksum mismatch hard-fails on users' machines).
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
-/// Connection options shared by app and tests so both run the same pragmas.
+/// Connection options shared by app and tests so both run the same pragmas. Commits are fully
+/// synced (`synchronous = FULL`, plus `fullfsync` on macOS, where a plain fsync doesn't reach the
+/// disk): an issued invoice number must never roll back and be reused after a power cut.
 pub fn connect_options(path: &Path) -> SqliteConnectOptions {
     SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
+        .synchronous(SqliteSynchronous::Full)
+        .pragma("fullfsync", "ON")
         .busy_timeout(Duration::from_secs(5))
 }
 

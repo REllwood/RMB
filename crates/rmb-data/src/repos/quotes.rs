@@ -1,7 +1,6 @@
 //! Quote (estimate) repository. Mirrors invoices (no stock/payments). A quote can convert into a
 //! draft invoice, copying its lines and linking both directions.
 
-use rmb_domain::numbering::format_number;
 use rmb_domain::status::QuoteStatus;
 use rmb_domain::tax::line_tax;
 use serde::Serialize;
@@ -75,8 +74,9 @@ pub async fn create_draft(
     )
     .fetch_one(&mut *tx)
     .await?;
-    let number = format_number(&prefix, seq, pad.max(0) as usize);
-    sqlx::query("UPDATE settings SET quote_next_seq = quote_next_seq + 1 WHERE id = 1")
+    let (number, seq) = invoices::next_free_number(&mut tx, "quote", &prefix, seq, pad).await?;
+    sqlx::query("UPDATE settings SET quote_next_seq = ? WHERE id = 1")
+        .bind(seq + 1)
         .execute(&mut *tx)
         .await?;
 

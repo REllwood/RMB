@@ -41,6 +41,7 @@ export function SettingsPage() {
   const toast = useToast();
   const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
+  const backupFolderQ = useIpcQuery(["backup-folder"], () => ipc.backupFolder());
   const [form, setForm] = useState<Settings | null>(null);
   const [status, setStatus] = useState("");
 
@@ -151,7 +152,8 @@ export function SettingsPage() {
     try {
       const path = await open({
         multiple: false,
-        filters: [{ name: "SQLite", extensions: ["sqlite"] }],
+        defaultPath: backupFolderQ.data,
+        filters: [{ name: "RMB backup", extensions: ["sqlite", "db"] }],
       });
       if (typeof path === "string") setConfirmRestore(path);
     } catch (error) {
@@ -677,9 +679,17 @@ export function SettingsPage() {
         <CardHeader>
           <CardTitle>Backup &amp; restore</CardTitle>
           <CardDescription>
-            Your data lives in a single local file. Back it up regularly.
+            Your data lives in a single local file. RMB keeps automatic backups (one every time it
+            opens: the latest seven, plus one a day for a month) and a copy before every update.
+            Back up to another drive or cloud folder regularly too.
           </CardDescription>
         </CardHeader>
+        {backupFolderQ.data && (
+          <CardContent className="pb-0 text-sm">
+            <span className="text-muted-foreground">Automatic backups: </span>
+            <span className="break-all font-mono text-xs">{backupFolderQ.data}</span>
+          </CardContent>
+        )}
         <CardContent className="flex gap-3">
           <Button
             variant="outline"

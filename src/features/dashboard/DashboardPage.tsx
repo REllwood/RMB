@@ -2,7 +2,7 @@ import type { ComponentType } from "react";
 import { AlertTriangle, Banknote, CheckCircle2, FileText, Hourglass, Sparkles } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
-import { useIpcQuery } from "@/lib/useIpc";
+import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import { useMoneyFormat } from "@/lib/money";
 import { useNav } from "@/app/nav";
 import { Button } from "@/components/ui/button";
@@ -56,6 +56,7 @@ export function DashboardPage() {
   const recentQ = useIpcQuery(["invoices"], () => ipc.listInvoices());
   const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
   const warningQ = useIpcQuery(["startup-warning"], () => ipc.getMeta("startup.warning"));
+  const dismissWarning = useIpcMutation(() => ipc.dismissStartupWarning(), [["startup-warning"]]);
 
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -72,12 +73,21 @@ export function DashboardPage() {
         <Card className="border-warning/60 bg-card">
           <CardContent className="flex items-start gap-3 pt-6">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-foreground" aria-hidden />
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="font-medium">Action needed</p>
               <p className="mt-1 whitespace-pre-line text-sm text-muted-foreground">
                 {warningQ.data}
               </p>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => dismissWarning.mutate(undefined)}
+              loading={dismissWarning.isPending}
+              loadingLabel="Dismissing…"
+            >
+              Dismiss
+            </Button>
           </CardContent>
         </Card>
       )}

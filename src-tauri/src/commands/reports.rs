@@ -73,6 +73,7 @@ fn csv_amount(minor: i64) -> String {
 }
 
 fn write_csv(dest: &str, header: &[&str], rows: Vec<Vec<String>>) -> Result<(), AppError> {
+    crate::commands::backup::ensure_extension(dest, &["csv"])?;
     // UTF-8 BOM makes non-ASCII customer names open correctly in Windows Excel without an import
     // wizard. Rows otherwise use RFC-4180 quoting and CRLF line endings.
     let mut out = String::from('\u{FEFF}');

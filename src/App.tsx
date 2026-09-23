@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 
 import { queryClient } from "@/lib/query";
 import { initTheme, type Theme } from "@/lib/theme";
@@ -12,6 +13,24 @@ function App() {
 
   useEffect(() => {
     void initTheme().then(setTheme);
+  }, []);
+
+  // The launch backup and recurring generation finish after the window opens; refresh what they
+  // may have changed.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    listen("startup-complete", () => {
+      for (const key of ["startup-warning", "invoices", "dashboard", "recurring"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    })
+      .then((unlisten) => {
+        stop = unlisten;
+      })
+      .catch(() => {
+        // Outside Tauri (tests) there are no backend events.
+      });
+    return () => stop?.();
   }, []);
 
   // Avoid a theme flash while still making startup progress visible and accessible.

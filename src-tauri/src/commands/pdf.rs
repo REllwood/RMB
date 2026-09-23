@@ -287,6 +287,7 @@ fn line_table(lines: &[PdfLine<'_>], currency: &str) -> (Vec<&'static str>, Vec<
 
 #[tauri::command]
 pub async fn export_invoice_pdf(db: State<'_, Db>, id: i64, dest: String) -> Result<(), AppError> {
+    crate::commands::backup::ensure_extension(&dest, &["pdf"])?;
     let detail = invoices::get_detail(&db, id)
         .await?
         .ok_or_else(|| AppError::Message("invoice not found".into()))?;
@@ -396,6 +397,7 @@ pub async fn export_invoice_pdf(db: State<'_, Db>, id: i64, dest: String) -> Res
 /// Receipt for an invoice's recorded payments — proof of what was paid and what remains.
 #[tauri::command]
 pub async fn export_receipt_pdf(db: State<'_, Db>, id: i64, dest: String) -> Result<(), AppError> {
+    crate::commands::backup::ensure_extension(&dest, &["pdf"])?;
     let detail = invoices::get_detail(&db, id)
         .await?
         .ok_or_else(|| AppError::Message("invoice not found".into()))?;
@@ -493,6 +495,7 @@ pub async fn export_receipt_pdf(db: State<'_, Db>, id: i64, dest: String) -> Res
 
 #[tauri::command]
 pub async fn export_quote_pdf(db: State<'_, Db>, id: i64, dest: String) -> Result<(), AppError> {
+    crate::commands::backup::ensure_extension(&dest, &["pdf"])?;
     let detail = quotes::get_detail(&db, id)
         .await?
         .ok_or_else(|| AppError::Message("quote not found".into()))?;

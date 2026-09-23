@@ -333,3 +333,37 @@ async fn the_job_total_matches_the_invoice_it_produces(pool: Db) -> Result<(), D
     );
     Ok(())
 }
+
+#[sqlx::test]
+async fn a_prefix_change_skips_numbers_already_used(pool: Db) -> Result<(), DataError> {
+    let c = customer(&pool, "Acme").await;
+    let mut s = settings::get(&pool).await?;
+    s.invoice_prefix = "INV-1".into();
+    s.number_pad = 1;
+    settings::update(&pool, &s).await?;
+    for _ in 0..3 {
+        let draft = invoices::create_draft(&pool, c, &[line(None, "1", 100)], None, "").await?;
+        invoices::issue(&pool, draft).await?; // INV-11, INV-12, INV-13
+    }
+    let mut s = settings::get(&pool).await?;
+    s.invoice_prefix = "INV-".into();
+    settings::update(&pool, &s).await?;
+    sqlx::query("UPDATE settings SET invoice_next_seq = 11 WHERE id = 1")
+        .execute(&pool)
+        .await?;
+
+    let draft = invoices::create_draft(&pool, c, &[line(None, "1", 100)], None, "").await?;
+    invoices::issue(&pool, draft).await?;
+    let number = invoices::get_detail(&pool, draft)
+        .await?
+        .unwrap()
+        .invoice
+        .number;
+    assert_eq!(
+        number.as_deref(),
+        Some("INV-14"),
+        "INV-11..13 already exist"
+    );
+    assert_eq!(settings::get(&pool).await?.invoice_next_seq, 15);
+    Ok(())
+}

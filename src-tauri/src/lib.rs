@@ -4,7 +4,7 @@
 //! Business logic lives in `rmb-domain` (pure) and `rmb-data` (sqlx). Modules grow as the
 //! build progresses.
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 mod commands;
@@ -31,17 +31,39 @@ fn report_fatal_startup(app: &tauri::App, message: String) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Two RMB processes on one database can lose work during a restore; a second launch just
+        // brings the open window forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let initialised = match app.path().app_data_dir() {
-                Ok(data_dir) => tauri::async_runtime::block_on(startup::initialise(&data_dir)),
-                Err(error) => Err(format!(
-                    "RMB couldn't find your user profile's application data folder.\n\n{error}"
-                )),
+            let data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(error) => {
+                    report_fatal_startup(
+                        app,
+                        format!(
+                            "RMB couldn't find your user profile's application data folder.\n\n{error}"
+                        ),
+                    );
+                    return Ok(());
+                }
             };
-            match initialised {
+            match tauri::async_runtime::block_on(startup::initialise(&data_dir)) {
                 Ok(pool) => {
-                    app.manage(pool);
+                    app.manage(pool.clone());
+                    // The launch backup and recurring generation don't hold up the window; the
+                    // UI refreshes when they finish.
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        startup::finish_in_background(&pool, &data_dir).await;
+                        let _ = handle.emit("startup-complete", ());
+                    });
                 }
                 Err(message) => report_fatal_startup(app, message),
             }
@@ -53,6 +75,8 @@ pub fn run() {
             commands::set_meta,
             commands::backup::backup_database,
             commands::backup::restore_database,
+            commands::backup::backup_folder,
+            commands::dismiss_startup_warning,
             // settings + tax
             commands::settings::get_settings,
             commands::settings::update_settings,

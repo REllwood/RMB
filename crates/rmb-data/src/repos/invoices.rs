@@ -489,6 +489,41 @@ pub async fn delete_draft(db: &Db, id: i64) -> Result<(), DataError> {
     Ok(())
 }
 
+/// The first number from `seq` that no document in `table` already uses. A prefix change (for
+/// example "INV-1" to "INV-") can make the counter produce a number issued long ago; skipping it
+/// keeps numbers unique instead of blocking every future issue.
+pub(crate) async fn next_free_number(
+    conn: &mut sqlx::SqliteConnection,
+    table: &str,
+    prefix: &str,
+    mut seq: i64,
+    pad: i64,
+) -> Result<(String, i64), DataError> {
+    let exists_sql = match table {
+        "invoice" => "SELECT EXISTS(SELECT 1 FROM invoice WHERE number = ?)",
+        "quote" => "SELECT EXISTS(SELECT 1 FROM quote WHERE number = ?)",
+        other => {
+            return Err(DataError::Other(format!(
+                "unknown numbered table '{other}'"
+            )))
+        }
+    };
+    for _ in 0..100_000 {
+        let candidate = format_number(prefix, seq, pad.max(0) as usize);
+        let taken: bool = sqlx::query_scalar(exists_sql)
+            .bind(&candidate)
+            .fetch_one(&mut *conn)
+            .await?;
+        if !taken {
+            return Ok((candidate, seq));
+        }
+        seq += 1;
+    }
+    Err(DataError::Other(
+        "no unused document number was found; change the prefix in Settings".into(),
+    ))
+}
+
 /// Issue a draft: assign number, freeze snapshots, decrement stock once, set status = issued.
 pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = begin_write(db).await?;
@@ -521,8 +556,9 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     )
     .fetch_one(&mut *tx)
     .await?;
-    let number = format_number(&prefix, seq, pad.max(0) as usize);
-    sqlx::query("UPDATE settings SET invoice_next_seq = invoice_next_seq + 1 WHERE id = 1")
+    let (number, seq) = next_free_number(&mut tx, "invoice", &prefix, seq, pad).await?;
+    sqlx::query("UPDATE settings SET invoice_next_seq = ? WHERE id = 1")
+        .bind(seq + 1)
         .execute(&mut *tx)
         .await?;
 

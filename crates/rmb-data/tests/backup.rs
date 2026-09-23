@@ -171,3 +171,40 @@ async fn auto_backup_writes_and_rotates(pool: Db) -> Result<(), DataError> {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[sqlx::test]
+async fn a_chosen_backup_file_is_replaced_safely(pool: Db) -> Result<(), DataError> {
+    let dest = std::env::temp_dir().join(format!("rmb-replace-{}.sqlite", std::process::id()));
+    std::fs::write(&dest, b"an older file the user chose to overwrite").unwrap();
+    backup::backup_replacing(&pool, &dest).await?;
+    backup::validate_backup(&dest).await?;
+    let _ = std::fs::remove_file(&dest);
+    Ok(())
+}
+
+#[tokio::test]
+async fn copying_a_live_database_includes_uncheckpointed_changes() -> Result<(), DataError> {
+    let dir = std::env::temp_dir().join(format!("rmb-walcopy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let live = dir.join("rmb.sqlite");
+    let pool = db::open(&live).await?;
+    // Keep writing without closing, so the changes sit in the -wal file beside the database.
+    for i in 0..25 {
+        sqlx::query("INSERT INTO customer (name) VALUES (?)")
+            .bind(format!("Customer {i}"))
+            .execute(&pool)
+            .await?;
+    }
+    let copy = dir.join("staged.sqlite");
+    backup::copy_database(&live, &copy).await?;
+    let staged = db::open(&copy).await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customer")
+        .fetch_one(&staged)
+        .await?;
+    assert_eq!(count, 25, "a plain file copy would have lost these");
+    staged.close().await;
+    pool.close().await;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
