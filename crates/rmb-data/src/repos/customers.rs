@@ -64,6 +64,39 @@ pub async fn list(db: &Db, search: Option<&str>) -> Result<Vec<Customer>, DataEr
     .await?)
 }
 
+/// A customer row for exports, including deleted customers (they may still owe money or appear on
+/// past invoices).
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct CustomerExportRow {
+    pub name: String,
+    pub email: String,
+    pub phone: String,
+    pub billing_address: String,
+    pub notes: String,
+    pub created_at: String,
+    pub deleted_at: Option<String>,
+}
+
+pub async fn export_rows(db: &Db) -> Result<Vec<CustomerExportRow>, DataError> {
+    Ok(sqlx::query_as::<_, CustomerExportRow>(
+        "SELECT name, email, phone, billing_address, notes, created_at, deleted_at FROM customer \
+         ORDER BY name, id",
+    )
+    .fetch_all(db)
+    .await?)
+}
+
+/// A customer even if deleted — for documents that must still show who they were for.
+pub async fn get_including_deleted(db: &Db, id: i64) -> Result<Option<Customer>, DataError> {
+    Ok(sqlx::query_as::<_, Customer>(
+        "SELECT id, name, email, phone, billing_address, notes, created_at FROM customer \
+         WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?)
+}
+
 pub async fn get(db: &Db, id: i64) -> Result<Option<Customer>, DataError> {
     Ok(sqlx::query_as::<_, Customer>(
         "SELECT id, name, email, phone, billing_address, notes, created_at FROM customer \

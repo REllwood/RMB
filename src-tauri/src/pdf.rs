@@ -24,8 +24,29 @@ pub fn render(json_data: &str, logo: Option<(Vec<u8>, String)>) -> Result<Vec<u8
     let doc = engine
         .compile_with_input(inputs)
         .output
-        .map_err(|e| format!("template error: {e:?}"))?;
-    typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default()).map_err(|e| format!("pdf error: {e:?}"))
+        .map_err(|e| format!("the PDF could not be laid out ({})", describe(&e)))?;
+    typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default()).map_err(|diagnostics| {
+        format!(
+            "the PDF could not be written ({})",
+            diagnostics
+                .iter()
+                .map(|d| d.message.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })
+}
+
+/// A readable summary of a Typst failure (its messages, not the internal debug structure).
+fn describe(error: &typst_as_lib::TypstAsLibError) -> String {
+    match error {
+        typst_as_lib::TypstAsLibError::TypstSource(diagnostics) => diagnostics
+            .iter()
+            .map(|d| d.message.to_string())
+            .collect::<Vec<_>>()
+            .join("; "),
+        other => other.to_string(),
+    }
 }
 
 /// Format integer minor units to a display string for the given currency.

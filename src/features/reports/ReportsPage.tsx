@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ErrorState, Loading } from "@/components/ui/states";
+import { taxLabel } from "@/features/shared/lines";
 
 type Preset = "this-month" | "last-month" | "this-year" | "all-time" | "custom";
 
@@ -101,6 +102,10 @@ export function ReportsPage() {
     }
   }
 
+  const invalidRange = (
+    <p className="text-sm text-muted-foreground">Fix the date range above to see this report.</p>
+  );
+
   const taxTotals = (taxQ.data ?? []).reduce(
     (acc, r) => ({
       net: acc.net + r.net_minor,
@@ -114,7 +119,7 @@ export function ReportsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Reports"
-        description="Accrual basis — grouped by invoice issue date. Drafts and voided invoices are excluded."
+        description="Sales count in the period they were issued. A voided invoice is subtracted in the period it was voided, so past periods never change. Drafts never count."
       />
 
       <div className="flex flex-wrap items-end gap-3">
@@ -130,13 +135,13 @@ export function ReportsPage() {
               <option value="last-month">Last month</option>
               <option value="this-year">This year</option>
               <option value="all-time">All time</option>
-              <option value="custom">Custom…</option>
+              <option value="custom">Custom dates…</option>
             </Select>
           )}
         </Field>
         {preset === "custom" && (
           <>
-            <Field label="From">
+            <Field label="From" hint="Leave blank to start from the beginning">
               {(p) => (
                 <Input
                   {...p}
@@ -149,6 +154,7 @@ export function ReportsPage() {
             </Field>
             <Field
               label="To"
+              hint={rangeValid ? "Leave blank for no end date" : undefined}
               error={!rangeValid ? "End date cannot be before the start date" : undefined}
             >
               {(p) => (
@@ -174,12 +180,14 @@ export function ReportsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {taxQ.isLoading ? (
+          {!rangeValid ? (
+            invalidRange
+          ) : taxQ.isLoading ? (
             <Loading />
           ) : taxQ.error ? (
             <ErrorState error={taxQ.error} onRetry={() => taxQ.refetch()} />
           ) : !taxQ.data || taxQ.data.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No issued invoices in this period.</p>
+            <p className="text-sm text-muted-foreground">No tax in this period.</p>
           ) : (
             <Table>
               <TableHeader>
@@ -193,7 +201,9 @@ export function ReportsPage() {
               <TableBody>
                 {taxQ.data.map((r) => (
                   <TableRow key={`${r.tax_rate_name}-${r.tax_rate_bp}`}>
-                    <TableCell className="font-medium">{r.tax_rate_name}</TableCell>
+                    <TableCell className="font-medium">
+                      {taxLabel({ name: r.tax_rate_name, bp: r.tax_rate_bp, inclusive: false })}
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">{money(r.net_minor)}</TableCell>
                     <TableCell className="text-right tabular-nums">{money(r.tax_minor)}</TableCell>
                     <TableCell className="text-right tabular-nums">
@@ -221,7 +231,9 @@ export function ReportsPage() {
             <CardTitle className="text-base">Sales by month</CardTitle>
           </CardHeader>
           <CardContent>
-            {monthQ.isLoading ? (
+            {!rangeValid ? (
+              invalidRange
+            ) : monthQ.isLoading ? (
               <Loading />
             ) : monthQ.error ? (
               <ErrorState error={monthQ.error} onRetry={() => monthQ.refetch()} />
@@ -232,9 +244,10 @@ export function ReportsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Month</TableHead>
-                    <TableHead className="text-right">Invoices</TableHead>
+                    <TableHead className="text-right">Issued</TableHead>
+                    <TableHead className="text-right">Voided</TableHead>
                     <TableHead className="text-right">Tax</TableHead>
-                    <TableHead className="text-right">Gross</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -242,6 +255,7 @@ export function ReportsPage() {
                     <TableRow key={r.month}>
                       <TableCell className="font-medium">{r.month}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.invoice_count}</TableCell>
+                      <TableCell className="text-right tabular-nums">{r.voided_count}</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {money(r.tax_minor)}
                       </TableCell>
@@ -259,9 +273,14 @@ export function ReportsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Top customers</CardTitle>
+            <CardDescription>
+              Sales in the period, and cash received from each customer in the period.
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            {custQ.isLoading ? (
+            {!rangeValid ? (
+              invalidRange
+            ) : custQ.isLoading ? (
               <Loading />
             ) : custQ.error ? (
               <ErrorState error={custQ.error} onRetry={() => custQ.refetch()} />
@@ -273,8 +292,8 @@ export function ReportsPage() {
                   <TableRow>
                     <TableHead>Customer</TableHead>
                     <TableHead className="text-right">Invoices</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
-                    <TableHead className="text-right">Paid</TableHead>
+                    <TableHead className="text-right">Sales</TableHead>
+                    <TableHead className="text-right">Received</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -301,8 +320,9 @@ export function ReportsPage() {
         <CardHeader>
           <CardTitle className="text-base">Export CSV</CardTitle>
           <CardDescription>
-            Spreadsheet-ready files for your accountant. Invoices and payments respect the period
-            above; customers exports everything.
+            Spreadsheet-ready files for your accountant. Invoices (issued in the period, never
+            drafts; voided ones listed with a zero balance) and payments (received in the period)
+            follow the period above. Customers exports every customer, including deleted ones.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-3">

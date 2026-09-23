@@ -5,7 +5,7 @@ import { FileDown, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 import { useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
-import type { InvoiceDetail, InvoiceRow } from "@/lib/types";
+import type { InvoiceDetail, InvoiceRow, Payment } from "@/lib/types";
 import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
 import { todayLocalISO } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -395,7 +395,8 @@ function InvoiceDetailView({
             <p className="text-sm text-muted-foreground">
               {invoice.customer_name || "—"}
               {invoice.issue_date && ` · issued ${invoice.issue_date}`}
-              {invoice.due_date && ` · due ${invoice.due_date}`}
+              {invoice.due_date && invoice.status !== "void" && ` · due ${invoice.due_date}`}
+              {invoice.void_date && ` · voided ${invoice.void_date}`}
             </p>
           </div>
           <StatusBadge inv={invoice} />
@@ -616,13 +617,26 @@ function InvoiceDetailView({
           }
         }}
         title="Remove this payment?"
-        description="The invoice balance increases and its status is recalculated. Use this to correct a mis-entered payment."
+        description={removalDescription(
+          paymentsQ.data?.find((p) => confirm?.kind === "remove-payment" && p.id === confirm.id),
+        )}
         confirmLabel="Remove payment"
         destructive
         pending={removePayment.isPending}
       />
     </div>
   );
+}
+
+/** Removing a payment changes cash reports for its date, so say so when that's a past month. */
+function removalDescription(payment: Payment | undefined): string {
+  const base =
+    "Use this to correct a mis-entered payment: the balance goes back up and the status is recalculated. A record of the removal is kept.";
+  if (!payment) return base;
+  const month = payment.date.slice(0, 7);
+  return month < todayLocalISO().slice(0, 7)
+    ? `${base} It was dated ${payment.date.slice(0, 10)}, so cash reports for ${month} will change.`
+    : base;
 }
 
 /** What happens to the quote or job an invoice came from when it is voided or deleted. */

@@ -185,6 +185,16 @@ pub async fn delete_payment(db: &Db, payment_id: i64) -> Result<(), DataError> {
     .fetch_all(&mut *tx)
     .await?;
 
+    // Keep an audit record of what is removed; balances and cash reports then drop it.
+    sqlx::query(
+        "INSERT INTO payment_removal (payment_id, invoice_id, customer_id, date, amount_minor, \
+         method, reference) \
+         SELECT p.id, a.invoice_id, p.customer_id, p.date, a.amount_minor, p.method, p.reference \
+         FROM payment p JOIN payment_allocation a ON a.payment_id = p.id WHERE p.id = ?",
+    )
+    .bind(payment_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM payment_allocation WHERE payment_id = ?")
         .bind(payment_id)
         .execute(&mut *tx)
@@ -342,6 +352,17 @@ mod tests {
                 .unwrap()
                 .amount_paid_minor,
             4000
+        );
+
+        let audited: (i64, String) =
+            sqlx::query_as("SELECT amount_minor, method FROM payment_removal WHERE payment_id = ?")
+                .bind(card)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            audited,
+            (6000, "card".into()),
+            "removals leave an audit record"
         );
 
         // Delete the remaining payment → back to issued; unknown id errors.

@@ -52,6 +52,8 @@ pub struct InvoiceRow {
     pub source_quote_id: Option<i64>,
     /// The job this invoice bills, if any.
     pub source_job_id: Option<i64>,
+    /// Local date the invoice was voided, if it was.
+    pub void_date: Option<String>,
     /// The customer's name as frozen on the issued invoice, or the current name for drafts. Deleted
     /// customers keep their name here so historical documents never lose who they were for.
     pub customer_name: String,
@@ -63,7 +65,7 @@ macro_rules! invoice_row_select {
     () => {
         "SELECT i.id, i.customer_id, i.number, i.status, i.issue_date, i.due_date, \
          i.subtotal_minor, i.tax_minor, i.total_minor, i.notes, i.created_at, i.source_quote_id, \
-         i.source_job_id, \
+         i.source_job_id, i.void_date, \
          COALESCE(CASE WHEN json_valid(i.customer_snapshot) \
                        THEN json_extract(i.customer_snapshot, '$.name') END, c.name, '') \
            AS customer_name \
@@ -628,7 +630,8 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
 pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = begin_write(db).await?;
     let claimed: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
-        "UPDATE invoice SET status = 'void', voided_at = datetime('now') \
+        "UPDATE invoice SET status = 'void', voided_at = datetime('now'), \
+         void_date = date('now', 'localtime') \
          WHERE id = ? AND status IN ('issued', 'part_paid', 'paid') \
            AND COALESCE((SELECT SUM(amount_minor) FROM payment_allocation \
                          WHERE invoice_id = ?), 0) = 0 \

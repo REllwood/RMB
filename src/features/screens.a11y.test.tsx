@@ -169,7 +169,14 @@ vi.mock("@/lib/ipc", () => ({
       },
     ],
     reportSalesMonthly: async () => [
-      { month: "2026-06", invoice_count: 1, net_minor: 1000, tax_minor: 200, gross_minor: 1200 },
+      {
+        month: "2026-06",
+        invoice_count: 1,
+        voided_count: 0,
+        net_minor: 1000,
+        tax_minor: 200,
+        gross_minor: 1200,
+      },
     ],
     reportSalesCustomers: async () => [
       { customer_id: 1, name: "Jane Doe", invoice_count: 1, gross_minor: 1200, paid_minor: 500 },
