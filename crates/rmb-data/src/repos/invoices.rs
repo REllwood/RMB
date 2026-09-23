@@ -54,6 +54,8 @@ pub struct InvoiceRow {
     pub source_job_id: Option<i64>,
     /// Local date the invoice was voided, if it was.
     pub void_date: Option<String>,
+    /// Payment terms for a draft: when issued, it is due this many days later.
+    pub due_days: Option<i64>,
     /// The customer's name as frozen on the issued invoice, or the current name for drafts. Deleted
     /// customers keep their name here so historical documents never lose who they were for.
     pub customer_name: String,
@@ -64,8 +66,9 @@ pub struct InvoiceRow {
 macro_rules! invoice_row_select {
     () => {
         "SELECT i.id, i.customer_id, i.number, i.status, i.issue_date, i.due_date, \
-         i.subtotal_minor, i.tax_minor, i.total_minor, i.notes, i.created_at, i.source_quote_id, \
-         i.source_job_id, i.void_date, \
+         i.subtotal_minor, i.tax_minor, i.total_minor, i.notes, \
+         datetime(i.created_at, 'localtime') AS created_at, i.source_quote_id, \
+         i.source_job_id, i.void_date, i.due_days, \
          COALESCE(CASE WHEN json_valid(i.customer_snapshot) \
                        THEN json_extract(i.customer_snapshot, '$.name') END, c.name, '') \
            AS customer_name \
@@ -292,12 +295,22 @@ pub(crate) async fn create_draft_on(
     validate_line_items(conn, lines).await?;
     let due_date = due_date.map(str::trim);
 
+    // Without a due date, the business's default payment terms apply from the issue date.
+    let due_days: Option<i64> = if due_date.is_none() {
+        sqlx::query_scalar("SELECT default_due_days FROM settings WHERE id = 1")
+            .fetch_one(&mut *conn)
+            .await?
+    } else {
+        None
+    };
+
     let invoice_id = sqlx::query(
-        "INSERT INTO invoice (customer_id, status, due_date, subtotal_minor, tax_minor, total_minor, tax_summary, notes) \
-         VALUES (?, 'draft', ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO invoice (customer_id, status, due_date, due_days, subtotal_minor, tax_minor, total_minor, tax_summary, notes) \
+         VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(customer_id)
     .bind(due_date)
+    .bind(due_days)
     .bind(totals.subtotal.minor())
     .bind(totals.tax_total.minor())
     .bind(totals.total.minor())

@@ -1,6 +1,8 @@
 import { useState } from "react";
 
+import { useNav } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
+import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import { useMoneyFormat } from "@/lib/money";
 import { Button } from "@/components/ui/button";
@@ -51,6 +53,7 @@ export function DocumentForm({
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
   const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
   const money = useMoneyFormat();
+  const goTo = useNav();
 
   const [customerId, setCustomerId] = useState<number | null>(initial?.customer_id ?? null);
   const [date, setDate] = useState(initial?.date ?? "");
@@ -59,10 +62,6 @@ export function DocumentForm({
   const [edited, setEdited] = useState<EditLine[] | null>(initial?.lines ?? null);
   // Problems are shown once the user tries to save, not while a new form is still being filled.
   const [attempted, setAttempted] = useState(false);
-
-  const listKey = isInvoice ? ["invoices"] : ["quotes"];
-  const detailKey = initial ? [isInvoice ? "invoice" : "quote", initial.id] : null;
-  const invalidate = detailKey ? [listKey, detailKey] : [listKey];
 
   const save = useIpcMutation(
     async (v: {
@@ -81,7 +80,7 @@ export function DocumentForm({
         ? ipc.createInvoice(v.customerId, v.lines, v.date, v.notes)
         : ipc.createQuote(v.customerId, v.lines, v.date, v.notes);
     },
-    invalidate,
+    DOCUMENT_KEYS,
     { successMessage: initial ? "Draft updated" : undefined },
   );
 
@@ -99,7 +98,8 @@ export function DocumentForm({
     return (
       <EmptyState
         title="Add a customer first"
-        description={`${isInvoice ? "Invoices" : "Quotes"} need a customer — create one under Customers.`}
+        description={`${isInvoice ? "Invoices" : "Quotes"} need a customer.`}
+        action={<Button onClick={() => goTo("customers")}>Go to Customers</Button>}
       />
     );
 
@@ -158,7 +158,14 @@ export function DocumentForm({
               </Select>
             )}
           </Field>
-          <Field label={isInvoice ? "Due date" : "Valid until"}>
+          <Field
+            label={isInvoice ? "Due date" : "Valid until"}
+            hint={
+              isInvoice && !date && settingsQ.data?.default_due_days != null
+                ? `Blank: due ${settingsQ.data.default_due_days} days after the invoice is issued`
+                : undefined
+            }
+          >
             {(p) => (
               <Input {...p} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             )}

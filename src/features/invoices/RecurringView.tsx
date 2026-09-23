@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 
-import { useView } from "@/app/nav";
+import { useNav, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
+import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { RecurringInput, RecurringListRow, ResumePreview } from "@/lib/types";
 import { parseWholeNumber, useMoneyFormat } from "@/lib/money";
@@ -47,7 +48,7 @@ type Mode = { kind: "list" } | { kind: "create" } | { kind: "edit"; id: number }
 
 /** Recurring invoice schedules — reached from the Invoices page. */
 export function RecurringView() {
-  const [mode, setMode] = useView<Mode>({ kind: "list" });
+  const [mode, setMode] = useView<Mode>(() => ({ kind: "list" }));
   return (
     <div className="space-y-4">
       {mode.kind === "list" && (
@@ -82,10 +83,7 @@ function ScheduleList({
   const del = useIpcMutation((id: number) => ipc.deleteRecurring(id), [["recurring"]], {
     successMessage: "Schedule deleted",
   });
-  const runNow = useIpcMutation(
-    () => ipc.runRecurringNow(),
-    [["recurring"], ["invoices"], ["dashboard"]],
-  );
+  const runNow = useIpcMutation(() => ipc.runRecurringNow(), DOCUMENT_KEYS);
   const [deleting, setDeleting] = useState<number | null>(null);
   const [resuming, setResuming] = useState<{
     row: RecurringListRow;
@@ -333,6 +331,7 @@ function ScheduleForm({
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
   const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
+  const goTo = useNav();
 
   const s = initial?.schedule;
   const [customerId, setCustomerId] = useState<number | null>(s?.customer_id ?? null);
@@ -366,7 +365,11 @@ function ScheduleForm({
     );
   if (customersQ.data && customersQ.data.length === 0)
     return (
-      <EmptyState title="Add a customer first" description="Schedules belong to a customer." />
+      <EmptyState
+        title="Add a customer first"
+        description="Schedules belong to a customer."
+        action={<Button onClick={() => goTo("customers")}>Go to Customers</Button>}
+      />
     );
 
   const taxes = taxQ.data ?? [];

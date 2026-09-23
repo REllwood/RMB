@@ -52,12 +52,12 @@ export function CatalogPage() {
 
   const listQ = useIpcQuery(["items", search], () => ipc.listItems(search || undefined));
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
-  const createMut = useIpcMutation((i: ItemInput) => ipc.createItem(i), [["items"]]);
+  const createMut = useIpcMutation((i: ItemInput) => ipc.createItem(i), [["items"], ["dashboard"]]);
   const updateMut = useIpcMutation(
     (v: { id: number; input: ItemInput }) => ipc.updateItem(v.id, v.input),
-    [["items"]],
+    [["items"], ["dashboard"]],
   );
-  const deleteMut = useIpcMutation((id: number) => ipc.deleteItem(id), [["items"]], {
+  const deleteMut = useIpcMutation((id: number) => ipc.deleteItem(id), [["items"], ["dashboard"]], {
     successMessage: "Item deleted",
   });
   const adjustMut = useIpcMutation(
@@ -269,6 +269,11 @@ export function CatalogPage() {
         <Loading />
       ) : listQ.error ? (
         <ErrorState error={listQ.error} onRetry={() => listQ.refetch()} />
+      ) : listQ.data && listQ.data.length === 0 && search.trim() ? (
+        <EmptyState
+          title={`No items match “${search.trim()}”`}
+          description="Check the spelling, or search by part of the name or SKU."
+        />
       ) : listQ.data && listQ.data.length === 0 ? (
         <EmptyState
           title="No items yet"

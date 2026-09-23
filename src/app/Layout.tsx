@@ -4,7 +4,7 @@ import { Moon, Store, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setTheme, type Theme } from "@/lib/theme";
-import { NavContext, ViewFocusContext } from "@/app/nav";
+import { NavContext, NavTargetContext, ViewFocusContext } from "@/app/nav";
 import { SECTIONS, type SectionId } from "@/app/sections";
 
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -39,6 +39,12 @@ function renderSection(id: SectionId) {
 
 export function Layout({ initialTheme }: { initialTheme: Theme }) {
   const [active, setActive] = useState<SectionId>("dashboard");
+  // Each navigation remounts the section (so clicking the current section returns to its list)
+  // and may carry a record for it to open.
+  const [visit, setVisit] = useState<{ key: number; recordId: number | null }>({
+    key: 0,
+    recordId: null,
+  });
   const [theme, setThemeState] = useState<Theme>(initialTheme);
   const mainRef = useRef<HTMLElement>(null);
   // Bumped whenever the section or a page's view changes; focus follows it (never on first load,
@@ -50,8 +56,9 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
     if (focusRequest > 0) mainRef.current?.focus();
   }, [focusRequest]);
 
-  function goTo(section: SectionId) {
+  function goTo(section: SectionId, recordId?: number) {
     setActive(section);
+    setVisit((v) => ({ key: v.key + 1, recordId: recordId ?? null }));
     requestFocus();
   }
 
@@ -122,7 +129,11 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
       >
         <NavContext.Provider value={goTo}>
           <ViewFocusContext.Provider value={requestFocus}>
-            <div className="mx-auto max-w-7xl">{renderSection(active)}</div>
+            <NavTargetContext.Provider value={visit.recordId}>
+              <div key={visit.key} className="mx-auto max-w-7xl">
+                {renderSection(active)}
+              </div>
+            </NavTargetContext.Provider>
           </ViewFocusContext.Provider>
         </NavContext.Provider>
       </main>

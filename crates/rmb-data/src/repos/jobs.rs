@@ -27,6 +27,22 @@ pub struct Job {
     pub status: String,
     pub source_quote_id: Option<i64>,
     pub created_at: String,
+    /// Kept for deleted customers so the job still says who it was for.
+    pub customer_name: String,
+    /// The live (not void) invoice that billed this job, if any.
+    pub invoice_id: Option<i64>,
+    pub invoice_number: Option<String>,
+}
+
+/// `SELECT` for [`Job`]; callers append `WHERE`/`ORDER BY` against the alias `j`.
+macro_rules! job_select {
+    () => {
+        "SELECT j.id, j.customer_id, j.title, j.description, j.status, j.source_quote_id, \
+         datetime(j.created_at, 'localtime') AS created_at, COALESCE(c.name, '') AS customer_name, \
+         i.id AS invoice_id, i.number AS invoice_number \
+         FROM job j LEFT JOIN customer c ON c.id = j.customer_id \
+         LEFT JOIN invoice i ON i.source_job_id = j.id AND i.status <> 'void'"
+    };
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -177,19 +193,19 @@ pub async fn create(db: &Db, input: &JobInput) -> Result<i64, DataError> {
 }
 
 pub async fn list(db: &Db) -> Result<Vec<Job>, DataError> {
-    Ok(sqlx::query_as::<_, Job>(
-        "SELECT id, customer_id, title, description, status, source_quote_id, created_at \
-         FROM job WHERE deleted_at IS NULL ORDER BY id DESC",
-    )
+    Ok(sqlx::query_as::<_, Job>(concat!(
+        job_select!(),
+        " WHERE j.deleted_at IS NULL ORDER BY j.id DESC"
+    ))
     .fetch_all(db)
     .await?)
 }
 
 pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<Job>, DataError> {
-    Ok(sqlx::query_as::<_, Job>(
-        "SELECT id, customer_id, title, description, status, source_quote_id, created_at \
-         FROM job WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC",
-    )
+    Ok(sqlx::query_as::<_, Job>(concat!(
+        job_select!(),
+        " WHERE j.customer_id = ? AND j.deleted_at IS NULL ORDER BY j.id DESC"
+    ))
     .bind(customer_id)
     .fetch_all(db)
     .await?)
@@ -473,10 +489,10 @@ pub async fn delete_material(db: &Db, id: i64) -> Result<(), DataError> {
 }
 
 pub async fn get_detail(db: &Db, id: i64) -> Result<Option<JobDetail>, DataError> {
-    let job = sqlx::query_as::<_, Job>(
-        "SELECT id, customer_id, title, description, status, source_quote_id, created_at \
-         FROM job WHERE id = ? AND deleted_at IS NULL",
-    )
+    let job = sqlx::query_as::<_, Job>(concat!(
+        job_select!(),
+        " WHERE j.id = ? AND j.deleted_at IS NULL"
+    ))
     .bind(id)
     .fetch_optional(db)
     .await?;

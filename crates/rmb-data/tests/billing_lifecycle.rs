@@ -367,3 +367,37 @@ async fn a_prefix_change_skips_numbers_already_used(pool: Db) -> Result<(), Data
     assert_eq!(settings::get(&pool).await?.invoice_next_seq, 15);
     Ok(())
 }
+
+#[sqlx::test]
+async fn default_payment_terms_set_the_due_date_at_issue(pool: Db) -> Result<(), DataError> {
+    let c = customer(&pool, "Acme").await;
+    let mut s = settings::get(&pool).await?;
+    s.default_due_days = Some(30);
+    settings::update(&pool, &s).await?;
+
+    // A job invoice (no due date given) picks up the terms and becomes due 30 days after issue.
+    let job = job_with_time(&pool, c).await;
+    let draft = jobs::invoice_from_job(&pool, job).await?;
+    assert_eq!(
+        invoices::get_detail(&pool, draft)
+            .await?
+            .unwrap()
+            .invoice
+            .due_days,
+        Some(30)
+    );
+    invoices::issue(&pool, draft).await?;
+    let expected: String = sqlx::query_scalar("SELECT date('now', 'localtime', '+30 days')")
+        .fetch_one(&pool)
+        .await?;
+    let issued = invoices::get_detail(&pool, draft).await?.unwrap().invoice;
+    assert_eq!(issued.due_date, Some(expected));
+
+    // An explicit due date wins.
+    let dated =
+        invoices::create_draft(&pool, c, &[line(None, "1", 100)], Some("2099-01-01"), "").await?;
+    let detail = invoices::get_detail(&pool, dated).await?.unwrap().invoice;
+    assert_eq!(detail.due_days, None);
+    assert_eq!(detail.due_date.as_deref(), Some("2099-01-01"));
+    Ok(())
+}

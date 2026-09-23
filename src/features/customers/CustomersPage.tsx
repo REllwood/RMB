@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Mail, MapPin, Pencil, Phone, Plus, Trash2 } from "lucide-react";
 
-import { useView } from "@/app/nav";
+import { useNav, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
+import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { Customer, CustomerInput } from "@/lib/types";
 import { useMoneyFormat } from "@/lib/money";
@@ -30,7 +31,9 @@ const EMPTY: CustomerInput = { name: "", email: "", phone: "", billing_address: 
 type View = { mode: "list" } | { mode: "detail"; id: number };
 
 export function CustomersPage() {
-  const [view, setView] = useView<View>({ mode: "list" });
+  const [view, setView] = useView<View>((recordId) =>
+    recordId === null ? { mode: "list" } : { mode: "detail", id: recordId },
+  );
 
   return (
     <div className="space-y-6">
@@ -171,6 +174,11 @@ function CustomerList({ onOpen }: { onOpen: (id: number) => void }) {
         <Loading />
       ) : listQ.error ? (
         <ErrorState error={listQ.error} onRetry={() => listQ.refetch()} />
+      ) : listQ.data && listQ.data.length === 0 && search.trim() ? (
+        <EmptyState
+          title={`No customers match “${search.trim()}”`}
+          description="Check the spelling, or search by part of the name or email."
+        />
       ) : listQ.data && listQ.data.length === 0 ? (
         <EmptyState
           title="No customers yet"
@@ -208,6 +216,7 @@ function CustomerList({ onOpen }: { onOpen: (id: number) => void }) {
                         e.stopPropagation();
                         onOpen(c.id);
                       }}
+                      aria-label={`Open ${c.name}`}
                     >
                       Open
                     </Button>
@@ -224,22 +233,45 @@ function CustomerList({ onOpen }: { onOpen: (id: number) => void }) {
 
 function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const money = useMoneyFormat();
+  const goTo = useNav();
   const q = useIpcQuery(["customer", id], () => ipc.getCustomer(id));
   const historyQ = useIpcQuery(["customer-history", id], () => ipc.customerHistory(id));
   const updateMut = useIpcMutation(
     (v: { id: number; input: CustomerInput }) => ipc.updateCustomer(v.id, v.input),
-    [["customers"], ["customer", id]],
+    [["customers"], ["customer", id], ["customer-history"], ["invoices"], ["quotes"], ["jobs"]],
     { successMessage: "Customer updated" },
   );
-  const deleteMut = useIpcMutation((cid: number) => ipc.deleteCustomer(cid), [["customers"]], {
-    successMessage: "Customer deleted",
-  });
+  const deleteMut = useIpcMutation(
+    (cid: number) => ipc.deleteCustomer(cid),
+    DOCUMENT_KEYS.concat([["customers"]]),
+    {
+      successMessage: "Customer deleted",
+    },
+  );
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const back = (
+    <Button variant="ghost" onClick={onBack}>
+      ← Back to list
+    </Button>
+  );
   if (q.isLoading) return <Loading />;
-  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
-  if (!q.data) return <EmptyState title="Customer not found" />;
+  if (q.error)
+    return (
+      <>
+        {back}
+        <ErrorState error={q.error} onRetry={() => q.refetch()} />
+      </>
+    );
+  if (!q.data)
+    return (
+      <EmptyState
+        title="Customer not found"
+        description="It may have been deleted."
+        action={back}
+      />
+    );
   const c: Customer = q.data;
   const h = historyQ.data;
 
@@ -306,6 +338,7 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
       )}
 
       {historyQ.isLoading && <Loading label="Loading history…" />}
+      {historyQ.error && <ErrorState error={historyQ.error} onRetry={() => historyQ.refetch()} />}
       {h && (
         <div className="grid gap-4 lg:grid-cols-2">
           <Card className="lg:col-span-2">
@@ -331,7 +364,13 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
                       return (
                         <TableRow key={inv.id}>
                           <TableCell className="font-medium">
-                            {inv.number ?? `Draft #${inv.id}`}
+                            <button
+                              type="button"
+                              className="text-primary underline-offset-4 hover:underline"
+                              onClick={() => goTo("invoices", inv.id)}
+                            >
+                              {inv.number ?? `Draft #${inv.id}`}
+                            </button>
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {inv.issue_date ?? inv.created_at.slice(0, 10)}
@@ -362,7 +401,13 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
                 <ul className="divide-y">
                   {h.quotes.map((quote) => (
                     <li key={quote.id} className="flex items-center justify-between py-2 text-sm">
-                      <span className="font-medium">{quote.number ?? `#${quote.id}`}</span>
+                      <button
+                        type="button"
+                        className="font-medium text-primary underline-offset-4 hover:underline"
+                        onClick={() => goTo("quotes", quote.id)}
+                      >
+                        {quote.number ?? `#${quote.id}`}
+                      </button>
                       <span className="flex items-center gap-3">
                         <span className="tabular-nums">{money(quote.total_minor)}</span>
                         <Badge variant="outline">{quote.status}</Badge>
@@ -385,7 +430,13 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
                 <ul className="divide-y">
                   {h.jobs.map((job) => (
                     <li key={job.id} className="flex items-center justify-between py-2 text-sm">
-                      <span className="font-medium">{job.title}</span>
+                      <button
+                        type="button"
+                        className="font-medium text-primary underline-offset-4 hover:underline"
+                        onClick={() => goTo("jobs", job.id)}
+                      >
+                        {job.title}
+                      </button>
                       <Badge variant="outline">{job.status.replace("_", "-")}</Badge>
                     </li>
                   ))}
@@ -408,7 +459,7 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
           }
         }}
         title={`Delete ${c.name}?`}
-        description="Customers with draft or active work cannot be deleted. Completed documents keep their historical details."
+        description="Customers with drafts, open quotes, unbilled jobs, recurring schedules or unpaid invoices can't be deleted. Completed documents keep their details."
         confirmLabel="Delete customer"
         destructive
         pending={deleteMut.isPending}

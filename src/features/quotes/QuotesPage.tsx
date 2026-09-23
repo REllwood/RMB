@@ -1,11 +1,14 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { FileDown, Hammer, Pencil, Plus, Receipt, Trash2 } from "lucide-react";
 
-import { useView } from "@/app/nav";
+import { useNav, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
+import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import { useMoneyFormat } from "@/lib/money";
+import { todayLocalISO } from "@/lib/format";
+import type { QuoteRow } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/dialog";
@@ -42,12 +45,23 @@ const STATUS_VARIANT: Record<
   converted: "default",
 };
 
+/** An open quote whose valid-until date has passed (it can still be accepted, with a warning). */
+function pastValidity(quote: Pick<QuoteRow, "status" | "valid_until">): boolean {
+  return (
+    (quote.status === "draft" || quote.status === "sent") &&
+    quote.valid_until !== null &&
+    quote.valid_until < todayLocalISO()
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   return <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>;
 }
 
 export function QuotesPage() {
-  const [view, setView] = useView<View>({ mode: "list" });
+  const [view, setView] = useView<View>((recordId) =>
+    recordId === null ? { mode: "list" } : { mode: "detail", id: recordId },
+  );
   return (
     <div className="space-y-6">
       <PageHeader
@@ -87,14 +101,8 @@ export function QuotesPage() {
   );
 }
 
-function useCustomerNames(): Map<number, string> {
-  const q = useIpcQuery(["customers", ""], () => ipc.listCustomers());
-  return useMemo(() => new Map((q.data ?? []).map((c) => [c.id, c.name])), [q.data]);
-}
-
 function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
   const money = useMoneyFormat();
-  const names = useCustomerNames();
   const q = useIpcQuery(["quotes"], () => ipc.listQuotes());
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -124,10 +132,11 @@ function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
           {q.data.map((row) => (
             <TableRow key={row.id} className="cursor-pointer" onClick={() => onOpen(row.id)}>
               <TableCell className="pl-4 font-medium">{row.number ?? `#${row.id}`}</TableCell>
-              <TableCell>{names.get(row.customer_id) ?? "—"}</TableCell>
+              <TableCell>{row.customer_name || "—"}</TableCell>
               <TableCell className="text-muted-foreground">{row.valid_until ?? "—"}</TableCell>
               <TableCell>
                 <StatusBadge status={row.status} />
+                {pastValidity(row) && <span className="sr-only">, past its valid-until date</span>}
               </TableCell>
               <TableCell className="text-right tabular-nums">{money(row.total_minor)}</TableCell>
               <TableCell className="pr-4 text-right">
@@ -138,6 +147,7 @@ function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
                     e.stopPropagation();
                     onOpen(row.id);
                   }}
+                  aria-label={`Open quote ${row.number ?? row.id}`}
                 >
                   Open
                 </Button>
@@ -189,18 +199,18 @@ function QuoteDetailView({
 }) {
   const toast = useToast();
   const money = useMoneyFormat();
-  const names = useCustomerNames();
+  const goTo = useNav();
   const q = useIpcQuery(["quote", id], () => ipc.getQuote(id));
   const jobsQ = useIpcQuery(["jobs"], () => ipc.listJobs());
-  const refresh: unknown[][] = [["quote", id], ["quotes"]];
+  const refresh = DOCUMENT_KEYS;
   const setStatus = useIpcMutation((s: string) => ipc.setQuoteStatus(id, s), refresh);
-  const convert = useIpcMutation(() => ipc.convertQuoteToInvoice(id), [...refresh, ["invoices"]], {
-    successMessage: "Draft invoice created — see Invoices",
+  const convert = useIpcMutation(() => ipc.convertQuoteToInvoice(id), refresh, {
+    successMessage: "Draft invoice created",
   });
-  const toJob = useIpcMutation(() => ipc.convertQuoteToJob(id), [...refresh, ["jobs"]], {
-    successMessage: "Job created — see Jobs",
+  const toJob = useIpcMutation(() => ipc.convertQuoteToJob(id), refresh, {
+    successMessage: "Job created",
   });
-  const deleteQuote = useIpcMutation(() => ipc.deleteQuote(id), [["quotes"]], {
+  const deleteQuote = useIpcMutation(() => ipc.deleteQuote(id), refresh, {
     successMessage: "Quote deleted",
   });
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -240,11 +250,18 @@ function QuoteDetailView({
         <div className="space-y-1">
           <CardTitle>{quote.number ?? `Quote #${quote.id}`}</CardTitle>
           <p className="text-sm text-muted-foreground">
-            {names.get(quote.customer_id) ?? "—"}
+            {quote.customer_name || "—"}
             {quote.valid_until && ` · valid until ${quote.valid_until}`}
           </p>
         </div>
-        <StatusBadge status={quote.status} />
+        <div className="flex flex-col items-end gap-1">
+          <StatusBadge status={quote.status} />
+          {pastValidity(quote) && (
+            <span className="text-xs text-muted-foreground">
+              Past its valid-until date — mark it expired or re-check prices
+            </span>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <Table>
@@ -357,15 +374,21 @@ function QuoteDetailView({
               <Trash2 className="size-4" /> Delete
             </Button>
           )}
-          {quote.converted_invoice_id && (
-            <p className="self-center text-sm text-muted-foreground">
-              Converted → invoice #{quote.converted_invoice_id}
-            </p>
+          {quote.converted_invoice_id !== null && (
+            <Button
+              variant="link"
+              onClick={() =>
+                quote.converted_invoice_id !== null && goTo("invoices", quote.converted_invoice_id)
+              }
+            >
+              Converted to invoice{" "}
+              {quote.converted_invoice_number ?? `(draft #${quote.converted_invoice_id})`}
+            </Button>
           )}
           {linkedJob && (
-            <p className="self-center text-sm text-muted-foreground">
-              Converted → {linkedJob.title}
-            </p>
+            <Button variant="link" onClick={() => goTo("jobs", linkedJob.id)}>
+              Converted to job: {linkedJob.title}
+            </Button>
           )}
         </div>
       </CardContent>
@@ -376,15 +399,30 @@ function QuoteDetailView({
           onClose={() => setAction(null)}
           onConfirm={async () => {
             try {
-              if (action === "to-invoice") await convert.mutateAsync(undefined);
-              else if (action === "to-job") await toJob.mutateAsync(undefined);
-              else await setStatus.mutateAsync(action);
+              if (action === "to-invoice") {
+                const invoiceId = await convert.mutateAsync(undefined);
+                setAction(null);
+                goTo("invoices", invoiceId);
+                return;
+              }
+              if (action === "to-job") {
+                const jobId = await toJob.mutateAsync(undefined);
+                setAction(null);
+                goTo("jobs", jobId);
+                return;
+              }
+              await setStatus.mutateAsync(action);
               setAction(null);
             } catch {
               // Keep the dialog open; the error is shown above it.
             }
           }}
           {...QUOTE_ACTIONS[action]}
+          description={
+            action === "accepted" && pastValidity(quote)
+              ? `This quote was valid until ${quote.valid_until}; check its prices still stand. ${QUOTE_ACTIONS.accepted.description}`
+              : QUOTE_ACTIONS[action].description
+          }
           pending={setStatus.isPending || convert.isPending || toJob.isPending}
         />
       )}

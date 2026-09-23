@@ -54,10 +54,12 @@ fn normalise(input: &CustomerInput) -> Result<CustomerInput, DataError> {
 }
 
 pub async fn list(db: &Db, search: Option<&str>) -> Result<Vec<Customer>, DataError> {
-    let like = format!("%{}%", search.unwrap_or("").trim());
+    let like = crate::repos::like_pattern(search);
     Ok(sqlx::query_as::<_, Customer>(
-        "SELECT id, name, email, phone, billing_address, notes, created_at FROM customer \
-         WHERE deleted_at IS NULL AND (name LIKE ?1 OR email LIKE ?1) ORDER BY name",
+        "SELECT id, name, email, phone, billing_address, notes, \
+         datetime(created_at, 'localtime') AS created_at FROM customer \
+         WHERE deleted_at IS NULL AND (name LIKE ?1 ESCAPE '\\' OR email LIKE ?1 ESCAPE '\\') \
+         ORDER BY name",
     )
     .bind(like)
     .fetch_all(db)
@@ -79,7 +81,8 @@ pub struct CustomerExportRow {
 
 pub async fn export_rows(db: &Db) -> Result<Vec<CustomerExportRow>, DataError> {
     Ok(sqlx::query_as::<_, CustomerExportRow>(
-        "SELECT name, email, phone, billing_address, notes, created_at, deleted_at FROM customer \
+        "SELECT name, email, phone, billing_address, notes, datetime(created_at, 'localtime') AS created_at, \
+         datetime(deleted_at, 'localtime') AS deleted_at FROM customer \
          ORDER BY name, id",
     )
     .fetch_all(db)
@@ -89,7 +92,8 @@ pub async fn export_rows(db: &Db) -> Result<Vec<CustomerExportRow>, DataError> {
 /// A customer even if deleted — for documents that must still show who they were for.
 pub async fn get_including_deleted(db: &Db, id: i64) -> Result<Option<Customer>, DataError> {
     Ok(sqlx::query_as::<_, Customer>(
-        "SELECT id, name, email, phone, billing_address, notes, created_at FROM customer \
+        "SELECT id, name, email, phone, billing_address, notes, \
+         datetime(created_at, 'localtime') AS created_at FROM customer \
          WHERE id = ?",
     )
     .bind(id)
@@ -99,7 +103,8 @@ pub async fn get_including_deleted(db: &Db, id: i64) -> Result<Option<Customer>,
 
 pub async fn get(db: &Db, id: i64) -> Result<Option<Customer>, DataError> {
     Ok(sqlx::query_as::<_, Customer>(
-        "SELECT id, name, email, phone, billing_address, notes, created_at FROM customer \
+        "SELECT id, name, email, phone, billing_address, notes, \
+         datetime(created_at, 'localtime') AS created_at FROM customer \
          WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(id)

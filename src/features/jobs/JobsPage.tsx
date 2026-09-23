@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { LoaderCircle, Plus, Trash2, X } from "lucide-react";
 
-import { useView } from "@/app/nav";
+import { useNav, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
+import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { JobMaterialInput, TimeEntryInput } from "@/lib/types";
 import { todayLocalISO } from "@/lib/format";
@@ -58,7 +59,9 @@ function JobStatusBadge({ status }: { status: string }) {
 }
 
 export function JobsPage() {
-  const [view, setView] = useView<View>({ mode: "list" });
+  const [view, setView] = useView<View>((recordId) =>
+    recordId === null ? { mode: "list" } : { mode: "detail", id: recordId },
+  );
   return (
     <div className="space-y-6">
       <PageHeader
@@ -85,13 +88,7 @@ export function JobsPage() {
   );
 }
 
-function useCustomerNames(): Map<number, string> {
-  const q = useIpcQuery(["customers", ""], () => ipc.listCustomers());
-  return useMemo(() => new Map((q.data ?? []).map((c) => [c.id, c.name])), [q.data]);
-}
-
 function JobList({ onOpen }: { onOpen: (id: number) => void }) {
-  const names = useCustomerNames();
   const q = useIpcQuery(["jobs"], () => ipc.listJobs());
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -120,7 +117,7 @@ function JobList({ onOpen }: { onOpen: (id: number) => void }) {
           {q.data.map((j) => (
             <TableRow key={j.id} className="cursor-pointer" onClick={() => onOpen(j.id)}>
               <TableCell className="pl-4 font-medium">{j.title}</TableCell>
-              <TableCell>{names.get(j.customer_id) ?? "—"}</TableCell>
+              <TableCell>{j.customer_name || "—"}</TableCell>
               <TableCell className="text-muted-foreground">{j.created_at.slice(0, 10)}</TableCell>
               <TableCell>
                 <JobStatusBadge status={j.status} />
@@ -133,6 +130,7 @@ function JobList({ onOpen }: { onOpen: (id: number) => void }) {
                     e.stopPropagation();
                     onOpen(j.id);
                   }}
+                  aria-label={`Open job ${j.title}`}
                 >
                   Open
                 </Button>
@@ -146,10 +144,11 @@ function JobList({ onOpen }: { onOpen: (id: number) => void }) {
 }
 
 function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
+  const goTo = useNav();
   const customersQ = useIpcQuery(["customers", ""], () => ipc.listCustomers());
   const create = useIpcMutation(
     (v: { customer_id: number; title: string; description: string }) => ipc.createJob(v),
-    [["jobs"]],
+    DOCUMENT_KEYS,
   );
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [title, setTitle] = useState("");
@@ -173,7 +172,13 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
   if (customersQ.error)
     return <ErrorState error={customersQ.error} onRetry={() => customersQ.refetch()} />;
   if (customersQ.data && customersQ.data.length === 0)
-    return <EmptyState title="Add a customer first" description="Jobs belong to a customer." />;
+    return (
+      <EmptyState
+        title="Add a customer first"
+        description="Jobs belong to a customer."
+        action={<Button onClick={() => goTo("customers")}>Go to Customers</Button>}
+      />
+    );
 
   return (
     <Card>
@@ -231,12 +236,12 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
 
 function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void }) {
   const money = useMoneyFormat();
-  const names = useCustomerNames();
+  const goTo = useNav();
   const q = useIpcQuery(["job", id], () => ipc.getJob(id));
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
   const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
-  const invalidate: unknown[][] = [["job", id], ["jobs"]];
+  const invalidate = DOCUMENT_KEYS;
   const addTime = useIpcMutation((e: TimeEntryInput) => ipc.addTimeEntry(id, e), invalidate);
   const addMaterial = useIpcMutation(
     (m: JobMaterialInput) => ipc.addJobMaterial(id, m),
@@ -245,11 +250,11 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   const delTime = useIpcMutation((t: number) => ipc.deleteTimeEntry(t), invalidate);
   const delMaterial = useIpcMutation((m: number) => ipc.deleteJobMaterial(m), invalidate);
   const setStatus = useIpcMutation((s: string) => ipc.setJobStatus(id, s), invalidate);
-  const deleteJob = useIpcMutation(() => ipc.deleteJob(id), [["jobs"]], {
+  const deleteJob = useIpcMutation(() => ipc.deleteJob(id), invalidate, {
     successMessage: "Job deleted",
   });
-  const invoiceJob = useIpcMutation(() => ipc.invoiceJob(id), [...invalidate, ["invoices"]], {
-    successMessage: "Draft invoice created — see Invoices",
+  const invoiceJob = useIpcMutation(() => ipc.invoiceJob(id), invalidate, {
+    successMessage: "Draft invoice created",
   });
 
   const taxes = taxQ.data ?? [];
@@ -372,7 +377,7 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
           <div className="space-y-1">
             <CardTitle>{job.title}</CardTitle>
             <p className="text-sm text-muted-foreground">
-              {names.get(job.customer_id) ?? "—"}
+              {job.customer_name || "—"}
               {job.description && ` · ${job.description}`}
             </p>
           </div>
@@ -714,14 +719,36 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-            <Button
-              onClick={() => setConfirm("invoice")}
-              disabled={!billable || !hasUnbilled}
-              loading={invoiceJob.isPending}
-              loadingLabel="Creating invoice…"
-            >
-              {billable ? "Create invoice from job" : "Invoiced"}
-            </Button>
+            {billable ? (
+              <Button
+                onClick={() => setConfirm("invoice")}
+                disabled={!hasUnbilled}
+                loading={invoiceJob.isPending}
+                loadingLabel="Creating invoice…"
+              >
+                Create invoice from job
+              </Button>
+            ) : job.invoice_id !== null ? (
+              <Button
+                variant="outline"
+                onClick={() => job.invoice_id !== null && goTo("invoices", job.invoice_id)}
+              >
+                Open invoice {job.invoice_number ?? `(draft #${job.invoice_id})`}
+              </Button>
+            ) : null}
+            {billable && !hasUnbilled && (
+              <span className="text-sm text-muted-foreground">
+                Add time or materials to invoice this job.
+              </span>
+            )}
+            {job.source_quote_id !== null && (
+              <Button
+                variant="link"
+                onClick={() => job.source_quote_id !== null && goTo("quotes", job.source_quote_id)}
+              >
+                From quote
+              </Button>
+            )}
             {billable && time_entries.length === 0 && materials.length === 0 && (
               <Button variant="ghost" onClick={() => setConfirm("delete")}>
                 <Trash2 className="size-4" /> Delete job
@@ -755,8 +782,9 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
           try {
-            await invoiceJob.mutateAsync(undefined);
+            const invoiceId = await invoiceJob.mutateAsync(undefined);
             setConfirm(null);
+            goTo("invoices", invoiceId);
           } catch {
             // Keep the dialog open so the backend explanation remains visible.
           }
