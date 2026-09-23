@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 
-import { useNav, useView } from "@/app/nav";
+import { useNav, useUnsavedEdits, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -343,6 +343,7 @@ function ScheduleForm({
   const [notes, setNotes] = useState(s?.notes ?? "");
   const [edited, setEdited] = useState<EditLine[] | null>(initial ? fromRows(initial.lines) : null);
   const [attempted, setAttempted] = useState(false);
+  useUnsavedEdits({ customerId, frequency, nextDate, endDate, dueDays, notes, edited });
 
   const save = useIpcMutation(
     async (v: { input: RecurringInput; lines: ReturnType<typeof toLineInputs> }) => {

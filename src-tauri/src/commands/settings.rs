@@ -48,6 +48,22 @@ pub async fn update_tax_rate(
     Ok(())
 }
 
+/// Archived tax rates, for reviewing and restoring.
+#[tauri::command]
+pub async fn list_archived_tax_rates(db: State<'_, Db>) -> Result<Vec<TaxRateRow>, AppError> {
+    Ok(settings::list_tax_rates(&db, true)
+        .await?
+        .into_iter()
+        .filter(|rate| rate.archived)
+        .collect())
+}
+
+#[tauri::command]
+pub async fn restore_tax_rate(db: State<'_, Db>, id: i64) -> Result<(), AppError> {
+    settings::restore_tax_rate(&db, id).await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn archive_tax_rate(db: State<'_, Db>, id: i64) -> Result<(), AppError> {
     settings::archive_tax_rate(&db, id).await?;

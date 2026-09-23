@@ -2,6 +2,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
 
+import userEvent from "@testing-library/user-event";
+
+import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { ToastProvider, useToast } from "@/components/ui/toast";
 import { Field } from "@/components/ui/field";
@@ -74,6 +77,29 @@ describe("Dialog", () => {
     fireEvent.mouseDown(dialog);
     fireEvent.click(dialog);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits from Enter in a field, but never from its other buttons", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const onOther = vi.fn();
+    render(
+      <Dialog
+        open
+        onClose={() => {}}
+        title="Adjust stock"
+        onSubmit={onSubmit}
+        footer={<Button type="submit">Adjust stock</Button>}
+      >
+        <Field label="Change">{(p) => <Input {...p} />}</Field>
+        <Button onClick={onOther}>Suggest</Button>
+      </Dialog>,
+    );
+    await user.click(screen.getByRole("button", { name: "Suggest", hidden: true }));
+    expect(onOther).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Change"), "5{Enter}");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
   it("keeps success toasts briefly and errors until dismissed", () => {

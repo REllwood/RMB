@@ -1,4 +1,12 @@
-import { useEffect, useId, useReducer, useRef, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useReducer,
+  useRef,
+  useSyncExternalStore,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -53,6 +61,7 @@ export function Dialog({
   children,
   footer,
   className,
+  onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
@@ -61,6 +70,8 @@ export function Dialog({
   children?: ReactNode;
   footer?: ReactNode;
   className?: string;
+  /** Makes the dialog a form: Enter in a field (or a `type="submit"` footer button) calls this. */
+  onSubmit?: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -132,7 +143,17 @@ export function Dialog({
       )}
     >
       {open && (
-        <div className="flex max-h-[85vh] flex-col">
+        <Frame
+          className="flex max-h-[85vh] flex-col"
+          onSubmit={
+            onSubmit
+              ? (e) => {
+                  e.preventDefault();
+                  onSubmit();
+                }
+              : undefined
+          }
+        >
           <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
             <div className="space-y-0.5">
               <h2 id={titleId} className="text-base font-semibold tracking-tight">
@@ -161,9 +182,29 @@ export function Dialog({
               {footer}
             </div>
           )}
-        </div>
+        </Frame>
       )}
     </dialog>
+  );
+}
+
+/** The dialog's content box: a form when the dialog submits, otherwise a plain container. */
+function Frame({
+  className,
+  children,
+  onSubmit,
+}: {
+  className: string;
+  children: ReactNode;
+  onSubmit?: (e: FormEvent<HTMLFormElement>) => void;
+}) {
+  return onSubmit ? (
+    // The app validates its own fields and explains problems inline.
+    <form className={className} onSubmit={onSubmit} noValidate>
+      {children}
+    </form>
+  ) : (
+    <div className={className}>{children}</div>
   );
 }
 

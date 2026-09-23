@@ -84,6 +84,8 @@ pub fn run() {
             commands::settings::create_tax_rate,
             commands::settings::update_tax_rate,
             commands::settings::archive_tax_rate,
+            commands::settings::list_archived_tax_rates,
+            commands::settings::restore_tax_rate,
             commands::settings::apply_tax_preset,
             commands::settings::set_logo,
             commands::settings::clear_logo,
@@ -100,6 +102,8 @@ pub fn run() {
             commands::catalog::create_item,
             commands::catalog::update_item,
             commands::catalog::delete_item,
+            commands::catalog::list_archived_items,
+            commands::catalog::restore_item,
             commands::catalog::adjust_stock,
             commands::catalog::item_movements,
             // invoices + payments

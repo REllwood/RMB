@@ -41,6 +41,7 @@ function Button({
   loadingLabel,
   disabled,
   children,
+  type = "button",
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
@@ -52,6 +53,8 @@ function Button({
   return (
     <Comp
       data-slot="button"
+      // A plain button never submits a surrounding form by accident; submit buttons say so.
+      type={asChild ? undefined : type}
       className={cn(buttonVariants({ variant, size, className }))}
       disabled={disabled || loading}
       aria-busy={loading || undefined}

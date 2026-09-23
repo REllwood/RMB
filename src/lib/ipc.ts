@@ -55,6 +55,8 @@ export const ipc = {
   updateTaxRate: (id: number, name: string, rateBp: number, inclusive: boolean) =>
     invoke<void>("update_tax_rate", { id, name, rateBp, inclusive }),
   archiveTaxRate: (id: number) => invoke<void>("archive_tax_rate", { id }),
+  listArchivedTaxRates: () => invoke<TaxRate[]>("list_archived_tax_rates"),
+  restoreTaxRate: (id: number) => invoke<void>("restore_tax_rate", { id }),
   applyTaxPreset: (country: string) => invoke<void>("apply_tax_preset", { country }),
   setLogo: (src: string) => invoke<string>("set_logo", { src }),
   clearLogo: () => invoke<void>("clear_logo"),
@@ -74,6 +76,8 @@ export const ipc = {
   createItem: (input: ItemInput) => invoke<number>("create_item", { input }),
   updateItem: (id: number, input: ItemInput) => invoke<void>("update_item", { id, input }),
   deleteItem: (id: number) => invoke<void>("delete_item", { id }),
+  listArchivedItems: () => invoke<Item[]>("list_archived_items"),
+  restoreItem: (id: number) => invoke<void>("restore_item", { id }),
   adjustStock: (itemId: number, qtyDelta: number, note: string) =>
     invoke<void>("adjust_stock", { itemId, qtyDelta, note }),
   itemMovements: (itemId: number) => invoke<StockMovement[]>("item_movements", { itemId }),

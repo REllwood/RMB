@@ -182,6 +182,26 @@ async fn void_reverses_recorded_stock_not_current_settings(pool: Db) -> Result<(
     assert_eq!(items::get(&pool, item).await?.unwrap().qty_on_hand, 7);
     invoices::void(&pool, tracked_sale).await?;
     assert_eq!(items::get(&pool, item).await?.unwrap().qty_on_hand, 10);
+
+    // The history names the invoice behind the sale and its reversal.
+    let number = invoices::get_detail(&pool, tracked_sale)
+        .await?
+        .unwrap()
+        .invoice
+        .number;
+    let history = items::movements(&pool, item).await?;
+    let described: Vec<(i64, &str, Option<&str>)> = history
+        .iter()
+        .map(|m| (m.qty_delta, m.reason.as_str(), m.invoice_number.as_deref()))
+        .collect();
+    assert_eq!(
+        described,
+        vec![
+            (3, "return", number.as_deref()),
+            (-3, "sale", number.as_deref()),
+            (10, "adjustment", None),
+        ]
+    );
     Ok(())
 }
 

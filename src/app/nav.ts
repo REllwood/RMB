@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 import type { SectionId } from "@/app/sections";
 
@@ -35,4 +35,25 @@ export function useView<T>(initial: (recordId: number | null) => T): [T, (next: 
     [focusView],
   );
   return [view, show];
+}
+
+/** Records whether a form has unsaved changes (provided by Layout). */
+export const UnsavedChangesContext = createContext<(form: symbol, dirty: boolean) => void>(
+  () => {},
+);
+
+/** While `dirty`, leaving the section asks before the form's changes are discarded. */
+export function useUnsavedChanges(dirty: boolean) {
+  const report = useContext(UnsavedChangesContext);
+  const [form] = useState(() => Symbol("form"));
+  useEffect(() => {
+    report(form, dirty);
+    return () => report(form, false);
+  }, [report, form, dirty]);
+}
+
+/** `useUnsavedChanges` for a form whose whole state is `value`: dirty once it has changed. */
+export function useUnsavedEdits(value: unknown) {
+  const [start] = useState(() => JSON.stringify(value));
+  useUnsavedChanges(JSON.stringify(value) !== start);
 }

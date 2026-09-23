@@ -228,19 +228,17 @@ function PaymentDialog({
       onClose={() => !pending && onClose()}
       title="Record payment"
       description="Enter an amount up to the outstanding balance. Overpayments are rejected."
+      onSubmit={() => {
+        if (valid && !pending && parsed !== null) {
+          onSubmit({ amountMinor: parsed, method, reference, date });
+        }
+      }}
       footer={
         <>
           <Button variant="outline" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button
-            disabled={!valid}
-            loading={pending}
-            loadingLabel="Saving…"
-            onClick={() =>
-              valid && parsed !== null && onSubmit({ amountMinor: parsed, method, reference, date })
-            }
-          >
+          <Button type="submit" disabled={!valid} loading={pending} loadingLabel="Saving…">
             Record payment
           </Button>
         </>

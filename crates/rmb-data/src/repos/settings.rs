@@ -296,6 +296,32 @@ pub async fn update_tax_rate(
     Ok(())
 }
 
+/// Make an archived tax rate available again (its name must not clash with an active rate).
+pub async fn restore_tax_rate(db: &Db, id: i64) -> Result<(), DataError> {
+    let name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM tax_rate WHERE id = ? AND archived = 1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    let name = name.ok_or_else(|| DataError::Other("archived tax rate not found".into()))?;
+    let clash: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM tax_rate WHERE archived = 0 AND lower(name) = lower(?))",
+    )
+    .bind(&name)
+    .fetch_one(db)
+    .await?;
+    if clash {
+        return Err(DataError::Other(format!(
+            "an active tax rate is already called {name}; rename or archive it first"
+        )));
+    }
+    sqlx::query("UPDATE tax_rate SET archived = 0 WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn archive_tax_rate(db: &Db, id: i64) -> Result<(), DataError> {
     let item_uses: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM item WHERE default_tax_rate_id = ? AND deleted_at IS NULL",
@@ -604,6 +630,24 @@ mod tests {
         s.currency = "EUR".into();
         s.phone = "555".into();
         update(&pool, &s).await?;
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn archived_tax_rates_can_be_restored(pool: Db) -> Result<(), DataError> {
+        let id = create_tax_rate(&pool, "GST 10%", 1000, false).await?;
+        archive_tax_rate(&pool, id).await?;
+        let replacement = create_tax_rate(&pool, "GST 10%", 1000, true).await?;
+        assert!(
+            restore_tax_rate(&pool, id).await.is_err(),
+            "names stay unique"
+        );
+        archive_tax_rate(&pool, replacement).await?;
+        restore_tax_rate(&pool, id).await?;
+        assert!(list_tax_rates(&pool, false)
+            .await?
+            .iter()
+            .any(|r| r.id == id));
         Ok(())
     }
 }

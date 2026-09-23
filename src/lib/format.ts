@@ -8,6 +8,14 @@ export function todayLocalISO(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** A UTC database timestamp ("YYYY-MM-DD HH:MM:SS") as local "YYYY-MM-DD HH:MM". */
+export function formatTimestamp(utc: string): string {
+  const d = new Date(`${utc.replace(" ", "T")}Z`);
+  if (Number.isNaN(d.getTime())) return utc;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /**
  * Format an integer minor-unit amount for display. The Rust backend is the source of truth
  * for money math; this only formats — never do arithmetic on money here. `scale` is the
