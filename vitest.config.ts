@@ -3,7 +3,8 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 
 // Component/unit tests run in jsdom. Tailwind is intentionally not loaded here — axe's
-// colour-contrast rule cannot run in jsdom, so design-token contrast has a deterministic test.
+// colour-contrast rule cannot run in jsdom, so design-token contrast has a deterministic test,
+// which reads index.css as plain text (the only stylesheet tests load).
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -13,6 +14,6 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
-    css: false,
+    css: { include: [/index\.css/] },
   },
 });

@@ -25,7 +25,8 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.55 0 0);
+  /* Dark enough for 4.5:1 on muted and tinted surfaces, not only on the page background. */
+  --muted-foreground: oklch(0.51 0 0);
 
   /* Neutral hover/active surface (shadcn semantics — NOT the brand accent) */
   --accent: oklch(0.97 0 0);
@@ -35,13 +36,15 @@
   --brand: oklch(0.769 0.156 70.08);
   --brand-foreground: oklch(0.27 0.05 70);
 
-  --destructive: oklch(0.577 0.245 27.325);
+  /* Readable as text on its own 10% tint (error badges) as well as under white labels. */
+  --destructive: oklch(0.52 0.21 27.325);
   --destructive-foreground: oklch(0.985 0 0);
   --success: oklch(0.5 0.14 150); /* dark enough for white text (WCAG AA) */
   --warning: oklch(0.769 0.156 70.08);
 
   --border: oklch(0.9 0.008 255);
-  --input: oklch(0.89 0.008 255);
+  /* Form control outlines need 3:1 against the page to be found (WCAG 1.4.11). */
+  --input: oklch(0.63 0.008 255);
   --ring: oklch(0.546 0.182 256);
 }
 
@@ -74,7 +77,7 @@
   --warning: oklch(0.769 0.156 70.08);
 
   --border: oklch(1 0 0 / 12%);
-  --input: oklch(1 0 0 / 16%);
+  --input: oklch(1 0 0 / 38%);
   --ring: oklch(0.685 0.169 256);
 }
 
@@ -112,7 +115,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
   html,
   body,
