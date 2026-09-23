@@ -61,6 +61,8 @@ export interface Item {
   tracked: boolean;
   qty_on_hand: number;
   reorder_point: number | null;
+  /** Stock has been recorded, so it must stay a tracked product. */
+  has_movements: boolean;
 }
 
 export interface ItemInput {
@@ -78,8 +80,10 @@ export interface StockMovement {
   id: number;
   qty_delta: number;
   reason: string;
-  occurred_at: string;
+  occurred_at: string; // UTC, "YYYY-MM-DD HH:MM:SS"
   note: string;
+  /** The invoice a sale (or its reversal on void) belongs to. */
+  invoice_number: string | null;
 }
 
 export interface LineInput {

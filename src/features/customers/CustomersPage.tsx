@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Mail, MapPin, Pencil, Phone, Plus, Trash2 } from "lucide-react";
 
-import { useNav, useView } from "@/app/nav";
+import { useNav, useUnsavedEdits, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -58,66 +58,76 @@ function CustomerForm({
   onCancel: () => void;
 }) {
   const [input, setInput] = useState<CustomerInput>(initial);
+  useUnsavedEdits(input);
   function field<K extends keyof CustomerInput>(key: K, value: CustomerInput[K]) {
     setInput((i) => ({ ...i, [key]: value }));
   }
   return (
     <Card>
-      <CardContent className="grid gap-4 pt-6 sm:grid-cols-2">
-        <Field label="Name" required>
-          {(p) => (
-            <Input {...p} value={input.name} onChange={(e) => field("name", e.target.value)} />
-          )}
-        </Field>
-        <Field label="Email">
-          {(p) => (
-            <Input
-              {...p}
-              type="email"
-              value={input.email}
-              onChange={(e) => field("email", e.target.value)}
-            />
-          )}
-        </Field>
-        <Field label="Phone">
-          {(p) => (
-            <Input {...p} value={input.phone} onChange={(e) => field("phone", e.target.value)} />
-          )}
-        </Field>
-        <Field label="Billing address">
-          {(p) => (
-            <Input
-              {...p}
-              value={input.billing_address}
-              onChange={(e) => field("billing_address", e.target.value)}
-            />
-          )}
-        </Field>
-        <div className="sm:col-span-2">
-          <Field label="Notes">
+      <form
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (input.name.trim() && !pending) onSubmit(input);
+        }}
+      >
+        <CardContent className="grid gap-4 pt-6 sm:grid-cols-2">
+          <Field label="Name" required>
             {(p) => (
-              <Textarea
+              <Input {...p} value={input.name} onChange={(e) => field("name", e.target.value)} />
+            )}
+          </Field>
+          <Field label="Email">
+            {(p) => (
+              <Input
                 {...p}
-                value={input.notes}
-                onChange={(e) => field("notes", e.target.value)}
+                type="email"
+                value={input.email}
+                onChange={(e) => field("email", e.target.value)}
               />
             )}
           </Field>
-        </div>
-        <div className="flex gap-2 sm:col-span-2">
-          <Button
-            onClick={() => onSubmit(input)}
-            disabled={!input.name.trim()}
-            loading={pending}
-            loadingLabel="Saving…"
-          >
-            Save
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-        </div>
-      </CardContent>
+          <Field label="Phone">
+            {(p) => (
+              <Input {...p} value={input.phone} onChange={(e) => field("phone", e.target.value)} />
+            )}
+          </Field>
+          <Field label="Billing address">
+            {(p) => (
+              <Textarea
+                {...p}
+                rows={3}
+                value={input.billing_address}
+                onChange={(e) => field("billing_address", e.target.value)}
+              />
+            )}
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="Notes">
+              {(p) => (
+                <Textarea
+                  {...p}
+                  value={input.notes}
+                  onChange={(e) => field("notes", e.target.value)}
+                />
+              )}
+            </Field>
+          </div>
+          <div className="flex gap-2 sm:col-span-2">
+            <Button
+              type="submit"
+              disabled={!input.name.trim()}
+              loading={pending}
+              loadingLabel="Saving…"
+            >
+              Save
+            </Button>
+            <Button variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+          </div>
+        </CardContent>
+      </form>
     </Card>
   );
 }

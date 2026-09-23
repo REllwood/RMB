@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+import { useUnsavedChanges } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { Settings, TaxRate } from "@/lib/types";
@@ -36,6 +37,24 @@ const COUNTRIES: [string, string][] = [
 ];
 
 type TaxDraft = { id: number; name: string; percent: string; inclusive: boolean };
+
+/** The business fields the settings form saves; everything else is changed elsewhere. */
+function businessFields(s: Settings): string {
+  return JSON.stringify([
+    s.business_name,
+    s.address,
+    s.email,
+    s.phone,
+    s.currency,
+    s.tax_label,
+    s.tax_number,
+    s.prices_tax_inclusive,
+    s.invoice_prefix,
+    s.quote_prefix,
+    s.number_pad,
+    s.default_due_days,
+  ]);
+}
 
 export function SettingsPage() {
   const toast = useToast();
@@ -80,7 +99,16 @@ export function SettingsPage() {
     [["tax-rates"]],
     { successMessage: "Tax rate updated" },
   );
-  const archiveMut = useIpcMutation((id: number) => ipc.archiveTaxRate(id), [["tax-rates"]]);
+  const archivedTaxQ = useIpcQuery(["tax-rates", "archived"], () => ipc.listArchivedTaxRates());
+  // Archiving the default rate clears the default, so settings are refreshed too.
+  const archiveMut = useIpcMutation(
+    (id: number) => ipc.archiveTaxRate(id),
+    [["tax-rates"], ["settings"]],
+    { successMessage: "Tax rate archived — existing documents keep it" },
+  );
+  const restoreTaxMut = useIpcMutation((id: number) => ipc.restoreTaxRate(id), [["tax-rates"]], {
+    successMessage: "Tax rate restored",
+  });
   const backupMut = useIpcMutation((path: string) => ipc.backupDatabase(path), [], {
     successMessage: "Backup written",
   });
@@ -97,6 +125,18 @@ export function SettingsPage() {
   const [choosingBackup, setChoosingBackup] = useState(false);
   const [choosingRestore, setChoosingRestore] = useState(false);
   const [choosingLogo, setChoosingLogo] = useState(false);
+  const [archiving, setArchiving] = useState<TaxRate | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  useUnsavedChanges(
+    (form !== null &&
+      settingsQ.data !== undefined &&
+      businessFields(form) !== businessFields(settingsQ.data)) ||
+      padText !== null ||
+      termsText !== null ||
+      taxName.trim() !== "" ||
+      taxPct.trim() !== "",
+  );
 
   if (settingsQ.isLoading || !form) return <Loading label="Loading settings…" />;
   if (settingsQ.error)
@@ -121,9 +161,17 @@ export function SettingsPage() {
     if (!form) return;
     setStatus("");
     try {
-      await saveMut.mutateAsync(form);
+      // The default tax rate is saved on its own (and changed by presets and archiving), so the
+      // latest value is kept rather than the one this form loaded with.
+      await saveMut.mutateAsync({
+        ...form,
+        default_tax_rate_id: settingsQ.data?.default_tax_rate_id ?? null,
+      });
       setPadText(null);
       setTermsText(null);
+      // Show what was stored (e.g. trimmed prefixes), which also clears the unsaved state.
+      const saved = await settingsQ.refetch();
+      if (saved.data) setForm(saved.data);
       setStatus("Settings saved.");
     } catch {
       // useIpcMutation has already shown the backend error.
@@ -199,11 +247,18 @@ export function SettingsPage() {
     try {
       await presetMut.mutateAsync(country);
       setPresetCountry("");
-      // The first preset also chooses the default rate for new lines.
-      const refreshed = await settingsQ.refetch();
-      if (refreshed.data) set("default_tax_rate_id", refreshed.data.default_tax_rate_id);
     } catch {
       // useIpcMutation has already shown the backend error.
+    }
+  }
+
+  function onTaxEditKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (!editTaxMut.isPending) void onSaveTax();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setTaxDraft(null);
     }
   }
 
@@ -278,208 +333,218 @@ export function SettingsPage() {
           <CardTitle>Business</CardTitle>
           <CardDescription>Appears on your quotes and invoices.</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="Business name"
-            required
-            error={
-              !form.business_name.trim() ? "Required before an invoice can be issued" : undefined
-            }
-          >
-            {(p) => (
-              <Input
-                {...p}
-                value={form.business_name}
-                onChange={(e) => set("business_name", e.target.value)}
+        <form
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!saveMut.isPending && !padError && !termsError) void onSave();
+          }}
+        >
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="Business name"
+              required
+              error={
+                !form.business_name.trim() ? "Required before an invoice can be issued" : undefined
+              }
+            >
+              {(p) => (
+                <Input
+                  {...p}
+                  value={form.business_name}
+                  onChange={(e) => set("business_name", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Email">
+              {(p) => (
+                <Input
+                  {...p}
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => set("email", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Phone">
+              {(p) => (
+                <Input {...p} value={form.phone} onChange={(e) => set("phone", e.target.value)} />
+              )}
+            </Field>
+            <Field
+              label="Currency"
+              hint={
+                form.currency_locked
+                  ? "Locked once an invoice has been issued, so totals never mix currencies."
+                  : "Choose before you issue your first invoice."
+              }
+            >
+              {(p) => (
+                <Select
+                  {...p}
+                  disabled={form.currency_locked}
+                  value={form.currency}
+                  onChange={(e) => set("currency", e.target.value)}
+                >
+                  {CURRENCIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="Address">
+              {(p) => (
+                <Textarea
+                  {...p}
+                  value={form.address}
+                  onChange={(e) => set("address", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              label="Default payment terms (days)"
+              hint="New invoices without a due date become due this many days after they're issued. Blank for none."
+              error={termsError}
+            >
+              {(p) => (
+                <Input
+                  {...p}
+                  inputMode="numeric"
+                  className="w-24"
+                  value={
+                    termsText ??
+                    (form.default_due_days === null ? "" : String(form.default_due_days))
+                  }
+                  onChange={(e) => {
+                    setTermsText(e.target.value);
+                    const days =
+                      e.target.value.trim() === ""
+                        ? null
+                        : parseWholeNumber(e.target.value, { min: 0, max: 3_650 });
+                    if (e.target.value.trim() === "" || days !== null)
+                      set("default_due_days", days);
+                  }}
+                />
+              )}
+            </Field>
+            <Field label="Tax label" hint="e.g. VAT, GST, Sales Tax">
+              {(p) => (
+                <Input
+                  {...p}
+                  value={form.tax_label}
+                  onChange={(e) => set("tax_label", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Tax number">
+              {(p) => (
+                <Input
+                  {...p}
+                  value={form.tax_number}
+                  onChange={(e) => set("tax_number", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Invoice number prefix">
+              {(p) => (
+                <Input
+                  {...p}
+                  value={form.invoice_prefix}
+                  onChange={(e) => set("invoice_prefix", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Quote number prefix">
+              {(p) => (
+                <Input
+                  {...p}
+                  value={form.quote_prefix}
+                  onChange={(e) => set("quote_prefix", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              label="Number padding"
+              error={padError}
+              hint={
+                padError
+                  ? undefined
+                  : `Digits after the prefix. Next invoice: ${formatNumberPreview(form.invoice_prefix, form.invoice_next_seq, form.number_pad)}`
+              }
+            >
+              {(p) => (
+                <Input
+                  {...p}
+                  inputMode="numeric"
+                  className="w-24"
+                  value={padText ?? String(form.number_pad)}
+                  onChange={(e) => {
+                    setPadText(e.target.value);
+                    const pad = parseWholeNumber(e.target.value, { min: 1, max: 12 });
+                    if (pad !== null) set("number_pad", pad);
+                  }}
+                />
+              )}
+            </Field>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.prices_tax_inclusive}
+                onChange={(e) => set("prices_tax_inclusive", e.target.checked)}
               />
-            )}
-          </Field>
-          <Field label="Email">
-            {(p) => (
-              <Input
-                {...p}
-                type="email"
-                value={form.email}
-                onChange={(e) => set("email", e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Phone">
-            {(p) => (
-              <Input {...p} value={form.phone} onChange={(e) => set("phone", e.target.value)} />
-            )}
-          </Field>
-          <Field
-            label="Currency"
-            hint={
-              form.currency_locked
-                ? "Locked once an invoice has been issued, so totals never mix currencies."
-                : "Choose before you issue your first invoice."
-            }
-          >
-            {(p) => (
-              <Select
-                {...p}
-                disabled={form.currency_locked}
-                value={form.currency}
-                onChange={(e) => set("currency", e.target.value)}
-              >
-                {CURRENCIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-          <Field label="Address">
-            {(p) => (
-              <Textarea
-                {...p}
-                value={form.address}
-                onChange={(e) => set("address", e.target.value)}
-              />
-            )}
-          </Field>
-          <Field
-            label="Default payment terms (days)"
-            hint="New invoices without a due date become due this many days after they're issued. Blank for none."
-            error={termsError}
-          >
-            {(p) => (
-              <Input
-                {...p}
-                inputMode="numeric"
-                className="w-24"
-                value={
-                  termsText ?? (form.default_due_days === null ? "" : String(form.default_due_days))
-                }
-                onChange={(e) => {
-                  setTermsText(e.target.value);
-                  const days =
-                    e.target.value.trim() === ""
-                      ? null
-                      : parseWholeNumber(e.target.value, { min: 0, max: 3_650 });
-                  if (e.target.value.trim() === "" || days !== null) set("default_due_days", days);
-                }}
-              />
-            )}
-          </Field>
-          <Field label="Tax label" hint="e.g. VAT, GST, Sales Tax">
-            {(p) => (
-              <Input
-                {...p}
-                value={form.tax_label}
-                onChange={(e) => set("tax_label", e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Tax number">
-            {(p) => (
-              <Input
-                {...p}
-                value={form.tax_number}
-                onChange={(e) => set("tax_number", e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Invoice number prefix">
-            {(p) => (
-              <Input
-                {...p}
-                value={form.invoice_prefix}
-                onChange={(e) => set("invoice_prefix", e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Quote number prefix">
-            {(p) => (
-              <Input
-                {...p}
-                value={form.quote_prefix}
-                onChange={(e) => set("quote_prefix", e.target.value)}
-              />
-            )}
-          </Field>
-          <Field
-            label="Number padding"
-            error={padError}
-            hint={
-              padError
-                ? undefined
-                : `Digits after the prefix. Next invoice: ${formatNumberPreview(form.invoice_prefix, form.invoice_next_seq, form.number_pad)}`
-            }
-          >
-            {(p) => (
-              <Input
-                {...p}
-                inputMode="numeric"
-                className="w-24"
-                value={padText ?? String(form.number_pad)}
-                onChange={(e) => {
-                  setPadText(e.target.value);
-                  const pad = parseWholeNumber(e.target.value, { min: 1, max: 12 });
-                  if (pad !== null) set("number_pad", pad);
-                }}
-              />
-            )}
-          </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.prices_tax_inclusive}
-              onChange={(e) => set("prices_tax_inclusive", e.target.checked)}
-            />
-            New tax rates are tax-inclusive (prices already include the tax)
-          </label>
-          <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
-            <span className="text-sm font-medium">Logo</span>
-            {form.logo_path ? (
-              <>
-                <span className="max-w-56 truncate text-sm text-muted-foreground">
-                  {form.logo_path.split(/[\\/]/).pop()}
-                </span>
+              New tax rates are tax-inclusive (prices already include the tax)
+            </label>
+            <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
+              <span className="text-sm font-medium">Logo</span>
+              {form.logo_path ? (
+                <>
+                  <span className="max-w-56 truncate text-sm text-muted-foreground">
+                    {form.logo_path.split(/[\\/]/).pop()}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onClearLogo}
+                    loading={clearLogoMut.isPending}
+                    loadingLabel="Removing…"
+                  >
+                    Remove
+                  </Button>
+                </>
+              ) : (
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={onClearLogo}
-                  loading={clearLogoMut.isPending}
-                  loadingLabel="Removing…"
+                  onClick={onChooseLogo}
+                  loading={choosingLogo || setLogoMut.isPending}
+                  loadingLabel={choosingLogo ? "Opening…" : "Importing…"}
                 >
-                  Remove
+                  Choose logo…
                 </Button>
-              </>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onChooseLogo}
-                loading={choosingLogo || setLogoMut.isPending}
-                loadingLabel={choosingLogo ? "Opening…" : "Importing…"}
-              >
-                Choose logo…
-              </Button>
+              )}
+              <span className="text-xs text-muted-foreground">
+                PNG or JPEG — shown on your quote &amp; invoice PDFs
+              </span>
+            </div>
+          </CardContent>
+          <CardContent className="flex items-center gap-3 border-t pt-4">
+            <Button
+              type="submit"
+              disabled={Boolean(padError || termsError)}
+              loading={saveMut.isPending}
+              loadingLabel="Saving…"
+            >
+              Save settings
+            </Button>
+            {status && (
+              <span role="status" className="text-sm text-muted-foreground">
+                {status}
+              </span>
             )}
-            <span className="text-xs text-muted-foreground">
-              PNG or JPEG — shown on your quote &amp; invoice PDFs
-            </span>
-          </div>
-        </CardContent>
-        <CardContent className="flex items-center gap-3 border-t pt-4">
-          <Button
-            onClick={onSave}
-            disabled={Boolean(padError || termsError)}
-            loading={saveMut.isPending}
-            loadingLabel="Saving…"
-          >
-            Save settings
-          </Button>
-          {status && (
-            <span role="status" className="text-sm text-muted-foreground">
-              {status}
-            </span>
-          )}
-        </CardContent>
+          </CardContent>
+        </form>
       </Card>
 
       <Card>
@@ -530,17 +595,11 @@ export function SettingsPage() {
                   <Select
                     {...p}
                     className="w-56"
-                    value={form.default_tax_rate_id ?? ""}
+                    value={settingsQ.data?.default_tax_rate_id ?? ""}
                     disabled={defaultTaxMut.isPending}
-                    onChange={async (e) => {
-                      const id = e.target.value ? Number(e.target.value) : null;
-                      try {
-                        await defaultTaxMut.mutateAsync(id);
-                        set("default_tax_rate_id", id);
-                      } catch {
-                        // useIpcMutation has already shown the backend error.
-                      }
-                    }}
+                    onChange={(e) =>
+                      defaultTaxMut.mutate(e.target.value ? Number(e.target.value) : null)
+                    }
                   >
                     <option value="">Automatic (first non-zero rate)</option>
                     {taxQ.data.map((r) => (
@@ -577,6 +636,7 @@ export function SettingsPage() {
                       <TableCell>
                         <Input
                           aria-label="Tax rate name"
+                          onKeyDown={onTaxEditKey}
                           value={taxDraft.name}
                           onChange={(e) => setTaxDraft({ ...taxDraft, name: e.target.value })}
                         />
@@ -584,6 +644,7 @@ export function SettingsPage() {
                       <TableCell>
                         <Input
                           aria-label="Tax rate percentage"
+                          onKeyDown={onTaxEditKey}
                           aria-invalid={Boolean(draftRateError)}
                           aria-describedby={draftRateError ? "tax-edit-error" : undefined}
                           className="w-24"
@@ -638,15 +699,19 @@ export function SettingsPage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right whitespace-nowrap">
-                        <Button variant="ghost" size="sm" onClick={() => startTaxEdit(r)}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Edit ${r.name}`}
+                          onClick={() => startTaxEdit(r)}
+                        >
                           Edit
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => archiveMut.mutate(r.id)}
-                          loading={archiveMut.isPending && archiveMut.variables === r.id}
-                          loadingLabel="Archiving…"
+                          aria-label={`Archive ${r.name}`}
+                          onClick={() => setArchiving(r)}
                         >
                           Archive
                         </Button>
@@ -662,7 +727,14 @@ export function SettingsPage() {
             </p>
           )}
 
-          <div className="flex flex-wrap items-end gap-2 border-t pt-4">
+          <form
+            noValidate
+            className="flex flex-wrap items-end gap-2 border-t pt-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!addTaxMut.isPending) void onAddTax();
+            }}
+          >
             <Field label="New rate name">
               {(p) => (
                 <Input
@@ -695,17 +767,74 @@ export function SettingsPage() {
               Prices include this tax
             </label>
             <Button
+              type="submit"
               variant="outline"
-              onClick={onAddTax}
               disabled={!taxName.trim() || newRateBp === null}
               loading={addTaxMut.isPending}
               loadingLabel="Adding…"
             >
               Add rate
             </Button>
-          </div>
+          </form>
+
+          {archivedTaxQ.data && archivedTaxQ.data.length > 0 && (
+            <div className="border-t pt-4">
+              <Button
+                variant="link"
+                className="h-auto px-0"
+                aria-expanded={showArchived}
+                aria-controls="archived-tax-rates"
+                onClick={() => setShowArchived((v) => !v)}
+              >
+                {showArchived ? "Hide" : "Show"} archived rates ({archivedTaxQ.data.length})
+              </Button>
+              {showArchived && (
+                <ul id="archived-tax-rates" className="mt-2 divide-y rounded-lg border">
+                  {archivedTaxQ.data.map((r) => (
+                    <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <span className="text-sm">
+                        {r.name}{" "}
+                        <span className="text-muted-foreground">
+                          · {(r.rate_bp / 100).toFixed(2)}% ·{" "}
+                          {r.inclusive ? "inclusive" : "exclusive"}
+                        </span>
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label={`Restore ${r.name}`}
+                        onClick={() => restoreTaxMut.mutate(r.id)}
+                        loading={restoreTaxMut.isPending && restoreTaxMut.variables === r.id}
+                        loadingLabel="Restoring…"
+                      >
+                        Restore
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={archiving !== null}
+        onClose={() => !archiveMut.isPending && setArchiving(null)}
+        onConfirm={async () => {
+          if (!archiving) return;
+          try {
+            await archiveMut.mutateAsync(archiving.id);
+            setArchiving(null);
+          } catch {
+            // useIpcMutation has already shown the backend error.
+          }
+        }}
+        title={archiving ? `Archive ${archiving.name}?` : "Archive tax rate?"}
+        description="It stops appearing for new lines. Documents that already use it keep it, and you can restore it later."
+        confirmLabel="Archive"
+        pending={archiveMut.isPending}
+      />
 
       <Card>
         <CardHeader>

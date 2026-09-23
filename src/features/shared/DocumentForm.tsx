@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { useNav } from "@/app/nav";
+import { useNav, useUnsavedEdits } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -83,6 +83,7 @@ export function DocumentForm({
     DOCUMENT_KEYS,
     { successMessage: initial ? "Draft updated" : undefined },
   );
+  useUnsavedEdits({ customerId, date, notes, edited });
 
   if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading || settingsQ.isLoading)
     return <Loading />;

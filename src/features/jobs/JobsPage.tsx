@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { LoaderCircle, Plus, Trash2, X } from "lucide-react";
 
-import { useNav, useView } from "@/app/nav";
+import { useNav, useUnsavedEdits, useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { DOCUMENT_KEYS } from "@/lib/query";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -53,6 +53,12 @@ const STATUS_VARIANT: Record<string, "success" | "secondary" | "outline" | "warn
   done: "warning",
   invoiced: "success",
 };
+
+const JOB_STATUS_CHOICES: [string, string][] = [
+  ["open", "Open"],
+  ["in_progress", "In progress"],
+  ["done", "Done"],
+];
 
 function JobStatusBadge({ status }: { status: string }) {
   return <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status.replace("_", "-")}</Badge>;
@@ -153,9 +159,10 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  useUnsavedEdits({ customerId, title, description });
 
   async function onSave() {
-    if (customerId === null || !title.trim()) return;
+    if (customerId === null || !title.trim() || create.isPending) return;
     try {
       const id = await create.mutateAsync({
         customer_id: customerId,
@@ -185,51 +192,63 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
       <CardHeader>
         <CardTitle>New job</CardTitle>
       </CardHeader>
-      <CardContent className="grid max-w-xl gap-4">
-        <Field label="Customer" required>
-          {(p) => (
-            <Select
-              {...p}
-              value={customerId ?? ""}
-              onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
-            >
-              <option value="" disabled>
-                Choose a customer…
-              </option>
-              {customersQ.data?.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
+      <form
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          void onSave();
+        }}
+      >
+        <CardContent className="grid max-w-xl gap-4">
+          <Field label="Customer" required>
+            {(p) => (
+              <Select
+                {...p}
+                value={customerId ?? ""}
+                onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="" disabled>
+                  Choose a customer…
                 </option>
-              ))}
-            </Select>
-          )}
-        </Field>
-        <Field label="Title" required>
-          {(p) => (
-            <Input
-              {...p}
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Rewire kitchen"
-            />
-          )}
-        </Field>
-        <Field label="Description">
-          {(p) => (
-            <Textarea {...p} value={description} onChange={(e) => setDescription(e.target.value)} />
-          )}
-        </Field>
-        <div>
-          <Button
-            onClick={onSave}
-            disabled={customerId === null || !title.trim()}
-            loading={create.isPending}
-            loadingLabel="Creating…"
-          >
-            Create job
-          </Button>
-        </div>
-      </CardContent>
+                {customersQ.data?.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <Field label="Title" required>
+            {(p) => (
+              <Input
+                {...p}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g. Rewire kitchen"
+              />
+            )}
+          </Field>
+          <Field label="Description">
+            {(p) => (
+              <Textarea
+                {...p}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            )}
+          </Field>
+          <div>
+            <Button
+              type="submit"
+              disabled={customerId === null || !title.trim()}
+              loading={create.isPending}
+              loadingLabel="Creating…"
+            >
+              Create job
+            </Button>
+          </div>
+        </CardContent>
+      </form>
     </Card>
   );
 }
@@ -384,20 +403,22 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
           <div className="flex items-center gap-2">
             {billable ? (
               <>
-                <label htmlFor="job-status" className="sr-only">
-                  Job status
-                </label>
-                <Select
-                  id="job-status"
-                  className="w-36"
-                  value={job.status}
-                  disabled={setStatus.isPending}
-                  onChange={(e) => setStatus.mutate(e.target.value)}
-                >
-                  <option value="open">Open</option>
-                  <option value="in_progress">In progress</option>
-                  <option value="done">Done</option>
-                </Select>
+                {/* Buttons rather than a select, so arrowing through options never saves. */}
+                <div role="group" aria-label="Job status" className="flex rounded-lg border p-0.5">
+                  {JOB_STATUS_CHOICES.map(([value, label]) => (
+                    <Button
+                      key={value}
+                      size="sm"
+                      variant={job.status === value ? "default" : "ghost"}
+                      className="h-7"
+                      aria-pressed={job.status === value}
+                      disabled={setStatus.isPending}
+                      onClick={() => job.status !== value && setStatus.mutate(value)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
                 {setStatus.isPending && (
                   <span
                     role="status"

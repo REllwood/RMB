@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Moon, Store, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { setTheme, type Theme } from "@/lib/theme";
-import { NavContext, NavTargetContext, ViewFocusContext } from "@/app/nav";
+import { NavContext, NavTargetContext, UnsavedChangesContext, ViewFocusContext } from "@/app/nav";
 import { SECTIONS, type SectionId } from "@/app/sections";
 
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -56,10 +57,30 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
     if (focusRequest > 0) mainRef.current?.focus();
   }, [focusRequest]);
 
-  function goTo(section: SectionId, recordId?: number) {
+  // Forms with unsaved changes; navigating away from them asks first.
+  const unsavedForms = useRef(new Set<symbol>());
+  const reportUnsaved = useCallback((form: symbol, dirty: boolean) => {
+    if (dirty) unsavedForms.current.add(form);
+    else unsavedForms.current.delete(form);
+  }, []);
+  const [leaving, setLeaving] = useState<{ section: SectionId; recordId?: number } | null>(null);
+
+  function navigate(section: SectionId, recordId?: number) {
     setActive(section);
     setVisit((v) => ({ key: v.key + 1, recordId: recordId ?? null }));
     requestFocus();
+  }
+
+  function goTo(section: SectionId, recordId?: number) {
+    if (unsavedForms.current.size > 0) setLeaving({ section, recordId });
+    else navigate(section, recordId);
+  }
+
+  function discardAndLeave() {
+    if (!leaving) return;
+    unsavedForms.current.clear();
+    setLeaving(null);
+    navigate(leaving.section, leaving.recordId);
   }
 
   function toggleTheme() {
@@ -69,7 +90,8 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
   }
 
   return (
-    <div className="grid min-h-screen grid-cols-[14.5rem_1fr] bg-background">
+    // The page scrolls inside <main>, so the sidebar always stays in view.
+    <div className="grid h-screen grid-cols-[14.5rem_1fr] overflow-hidden bg-background">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-2 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground"
@@ -79,7 +101,7 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
 
       <nav
         aria-label="Primary"
-        className="flex flex-col gap-1 border-r bg-card/95 p-3 shadow-[1px_0_0_oklch(0_0_0/0.02)]"
+        className="flex flex-col gap-1 overflow-y-auto border-r bg-card/95 p-3 shadow-[1px_0_0_oklch(0_0_0/0.02)]"
       >
         <div className="mb-3 flex items-center gap-2.5 px-2 py-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-[0.7rem] bg-primary text-primary-foreground shadow-sm">
@@ -129,14 +151,26 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
       >
         <NavContext.Provider value={goTo}>
           <ViewFocusContext.Provider value={requestFocus}>
-            <NavTargetContext.Provider value={visit.recordId}>
-              <div key={visit.key} className="mx-auto max-w-7xl">
-                {renderSection(active)}
-              </div>
-            </NavTargetContext.Provider>
+            <UnsavedChangesContext.Provider value={reportUnsaved}>
+              <NavTargetContext.Provider value={visit.recordId}>
+                <div key={visit.key} className="mx-auto max-w-7xl">
+                  {renderSection(active)}
+                </div>
+              </NavTargetContext.Provider>
+            </UnsavedChangesContext.Provider>
           </ViewFocusContext.Provider>
         </NavContext.Provider>
       </main>
+
+      <ConfirmDialog
+        open={leaving !== null}
+        onClose={() => setLeaving(null)}
+        onConfirm={discardAndLeave}
+        title="Discard unsaved changes?"
+        description="You have changes that haven't been saved. Leaving now discards them."
+        confirmLabel="Discard changes"
+        destructive
+      />
     </div>
   );
 }

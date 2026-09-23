@@ -19,6 +19,19 @@ pub struct Item {
     pub tracked: bool,
     pub qty_on_hand: i64,
     pub reorder_point: Option<i64>,
+    /// Stock has been recorded, so the item must stay a tracked product (its history depends on it).
+    #[serde(default)]
+    pub has_movements: bool,
+}
+
+/// `SELECT` for [`Item`]; callers append `WHERE`/`ORDER BY` against the table `item`.
+macro_rules! item_select {
+    () => {
+        "SELECT id, kind, name, sku, unit, default_price_minor, default_tax_rate_id, tracked, \
+         qty_on_hand, reorder_point, \
+         EXISTS(SELECT 1 FROM stock_movement m WHERE m.item_id = item.id) AS has_movements \
+         FROM item"
+    };
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,25 +131,27 @@ pub struct StockMovement {
     pub reason: String,
     pub occurred_at: String,
     pub note: String,
+    /// The invoice a sale (or its reversal on void) belongs to.
+    pub invoice_number: Option<String>,
 }
 
 pub async fn list(db: &Db, search: Option<&str>) -> Result<Vec<Item>, DataError> {
     let like = crate::repos::like_pattern(search);
-    Ok(sqlx::query_as::<_, Item>(
-        "SELECT id, kind, name, sku, unit, default_price_minor, default_tax_rate_id, tracked, \
-         qty_on_hand, reorder_point FROM item WHERE deleted_at IS NULL \
-         AND (name LIKE ?1 ESCAPE '\\' OR sku LIKE ?1 ESCAPE '\\') ORDER BY name",
-    )
+    Ok(sqlx::query_as::<_, Item>(concat!(
+        item_select!(),
+        " WHERE deleted_at IS NULL \
+          AND (name LIKE ?1 ESCAPE '\\' OR sku LIKE ?1 ESCAPE '\\') ORDER BY name"
+    ))
     .bind(like)
     .fetch_all(db)
     .await?)
 }
 
 pub async fn get(db: &Db, id: i64) -> Result<Option<Item>, DataError> {
-    Ok(sqlx::query_as::<_, Item>(
-        "SELECT id, kind, name, sku, unit, default_price_minor, default_tax_rate_id, tracked, \
-         qty_on_hand, reorder_point FROM item WHERE id = ? AND deleted_at IS NULL",
-    )
+    Ok(sqlx::query_as::<_, Item>(concat!(
+        item_select!(),
+        " WHERE id = ? AND deleted_at IS NULL"
+    ))
     .bind(id)
     .fetch_optional(db)
     .await?)
@@ -185,10 +200,48 @@ pub async fn update(db: &Db, id: i64, input: &ItemInput) -> Result<(), DataError
     .await?;
     if result.rows_affected() != 1 {
         return Err(DataError::Other(
-            "item not found, or tracking cannot be disabled after stock has been recorded; archive the item and create a new one instead"
+            "this item has stock history, so it must stay a tracked product; create a new item for services"
                 .into(),
         ));
     }
+    Ok(())
+}
+
+/// Archived items, newest first — including any holding stock (a void can return stock to one).
+pub async fn list_archived(db: &Db) -> Result<Vec<Item>, DataError> {
+    Ok(sqlx::query_as::<_, Item>(concat!(
+        item_select!(),
+        " WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC"
+    ))
+    .fetch_all(db)
+    .await?)
+}
+
+/// Bring an archived item back into the catalogue.
+pub async fn restore(db: &Db, id: i64) -> Result<(), DataError> {
+    let sku: Option<String> =
+        sqlx::query_scalar("SELECT sku FROM item WHERE id = ? AND deleted_at IS NOT NULL")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    let sku = sku.ok_or_else(|| DataError::Other("archived item not found".into()))?;
+    if !sku.trim().is_empty() {
+        let clash: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM item WHERE deleted_at IS NULL AND lower(sku) = lower(?))",
+        )
+        .bind(&sku)
+        .fetch_one(db)
+        .await?;
+        if clash {
+            return Err(DataError::Other(format!(
+                "another active item already uses SKU {sku}; change or archive it first"
+            )));
+        }
+    }
+    sqlx::query("UPDATE item SET deleted_at = NULL WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -313,8 +366,10 @@ pub async fn adjust_stock(
 
 pub async fn movements(db: &Db, item_id: i64) -> Result<Vec<StockMovement>, DataError> {
     Ok(sqlx::query_as::<_, StockMovement>(
-        "SELECT id, qty_delta, reason, occurred_at, note FROM stock_movement \
-         WHERE item_id = ? ORDER BY id DESC",
+        "SELECT m.id, m.qty_delta, m.reason, m.occurred_at, m.note, i.number AS invoice_number \
+         FROM stock_movement m \
+         LEFT JOIN invoice i ON m.ref_type IN ('invoice', 'invoice-void') AND i.id = m.ref_id \
+         WHERE m.item_id = ? ORDER BY m.id DESC",
     )
     .bind(item_id)
     .fetch_all(db)
@@ -403,6 +458,24 @@ mod tests {
         );
         soft_delete(&pool, id).await?;
         assert!(adjust_stock(&pool, id, 1, "deleted").await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn archived_items_can_be_listed_and_restored(pool: Db) -> Result<(), DataError> {
+        let id = create(&pool, &product("Widget")).await?;
+        adjust_stock(&pool, id, 1, "one").await?;
+        assert!(get(&pool, id).await?.unwrap().has_movements);
+        adjust_stock(&pool, id, -1, "none").await?;
+        soft_delete(&pool, id).await?;
+        assert_eq!(list_archived(&pool).await?.len(), 1);
+
+        // A new item took the SKU meanwhile, so restoring must not duplicate it.
+        let taken = create(&pool, &product("Widget")).await?;
+        assert!(restore(&pool, id).await.is_err());
+        soft_delete(&pool, taken).await?;
+        restore(&pool, id).await?;
+        assert!(get(&pool, id).await?.is_some());
         Ok(())
     }
 }

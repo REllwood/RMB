@@ -54,8 +54,14 @@ vi.mock("@/lib/ipc", () => ({
         tracked: true,
         qty_on_hand: 3,
         reorder_point: 5,
+        has_movements: true,
       },
     ],
+    listArchivedItems: async () => [],
+    listArchivedTaxRates: async () => [
+      { id: 2, name: "Old rate", rate_bp: 1750, inclusive: false, archived: true },
+    ],
+    backupFolder: async () => "/data/backups",
     listInvoices: async () => [
       {
         id: 1,

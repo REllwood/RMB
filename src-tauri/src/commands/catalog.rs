@@ -51,3 +51,14 @@ pub async fn item_movements(
 ) -> Result<Vec<StockMovement>, AppError> {
     Ok(items::movements(&db, item_id).await?)
 }
+
+#[tauri::command]
+pub async fn list_archived_items(db: State<'_, Db>) -> Result<Vec<Item>, AppError> {
+    Ok(items::list_archived(&db).await?)
+}
+
+#[tauri::command]
+pub async fn restore_item(db: State<'_, Db>, id: i64) -> Result<(), AppError> {
+    items::restore(&db, id).await?;
+    Ok(())
+}
