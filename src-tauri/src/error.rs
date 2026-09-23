@@ -28,7 +28,7 @@ impl From<&str> for AppError {
 
 impl From<rmb_data::DataError> for AppError {
     fn from(value: rmb_data::DataError) -> Self {
-        AppError::Data(value.to_string())
+        AppError::Data(value.user_message())
     }
 }
 

@@ -7,10 +7,14 @@ use std::path::Path;
 use rmb_data::db::Db;
 use rmb_data::repos::{meta, recurring, settings};
 
+use crate::commands::backup::RESTORE_OUTCOME_FILE;
+
 /// Number of most-recent automatic backups kept (older days keep one each; see `prune_auto_backups`).
 const LAUNCH_BACKUPS_KEPT: usize = 7;
 
-/// Open everything the app needs. `Err` is a complete, user-facing explanation.
+/// Open the database and apply one-time upgrades — the work the window must wait for. The launch
+/// backup and recurring generation run afterwards in [`finish_in_background`]. `Err` is a
+/// complete, user-facing explanation.
 pub async fn initialise(data_dir: &Path) -> Result<Db, String> {
     std::fs::create_dir_all(data_dir).map_err(|error| {
         format!(
@@ -24,10 +28,18 @@ pub async fn initialise(data_dir: &Path) -> Result<Db, String> {
 
     let opened = rmb_data::db::open_app(&db_path, &backups)
         .await
-        .map_err(|error| fatal_message(&db_path, &backups, &error.to_string()))?;
+        .map_err(|error| fatal_message(&db_path, &backups, &error.user_message()))?;
     let pool = opened.db;
     let mut warnings = Vec::new();
 
+    // A restore restarts the app; this is where the user learns whether it worked.
+    let outcome_path = data_dir.join(RESTORE_OUTCOME_FILE);
+    if let Ok(outcome) = std::fs::read_to_string(&outcome_path) {
+        let _ = std::fs::remove_file(&outcome_path);
+        if !outcome.contains("was restored.") {
+            warnings.push(outcome.trim().to_owned());
+        }
+    }
     if opened.created && had_backups {
         warnings.push(format!(
             "RMB couldn't find its database, so it started with an empty one. If you had data, restore \
@@ -43,34 +55,62 @@ pub async fn initialise(data_dir: &Path) -> Result<Db, String> {
     embed_legacy_logo(&pool, &mut warnings).await;
     if let Err(error) = settings::backfill_legacy_invoice_logo_assets(&pool).await {
         warnings.push(format!(
-            "Historical invoice logos could not be upgraded. Re-import the logo and restart RMB. ({error})"
+            "Historical invoice logos could not be upgraded. Re-import the logo and restart RMB. ({})",
+            error.user_message()
         ));
-    }
-
-    // Rotating safety net: snapshot the database on every launch.
-    if let Err(error) = rmb_data::backup::auto_backup(&pool, &backups, LAUNCH_BACKUPS_KEPT).await {
-        eprintln!("auto-backup failed: {error}");
-        warnings.push(format!(
-            "Automatic backup failed. Create a manual backup in Settings before entering new work. ({error})"
-        ));
-    }
-
-    // Generate any recurring invoices that came due while the app was closed. Drafts only —
-    // nothing is issued without the user.
-    match recurring::run_due_now(&pool).await {
-        Ok(report) => warnings.extend(report.problems),
-        Err(error) => {
-            eprintln!("recurring generation failed: {error}");
-            warnings.push(format!(
-                "Recurring invoices could not be generated. Review Recurring invoices and try Generate due now. ({error})"
-            ));
-        }
     }
 
     if let Err(error) = meta::set(&pool, "startup.warning", &warnings.join("\n")).await {
         eprintln!("could not store startup warning state: {error}");
     }
     Ok(pool)
+}
+
+/// The launch backup and recurring-invoice generation, run once the window is usable. Problems
+/// are added to the dashboard's startup warning.
+pub async fn finish_in_background(pool: &Db, data_dir: &Path) {
+    let mut warnings = Vec::new();
+
+    // Rotating safety net: snapshot the database on every launch.
+    if let Err(error) =
+        rmb_data::backup::auto_backup(pool, &data_dir.join("backups"), LAUNCH_BACKUPS_KEPT).await
+    {
+        eprintln!("auto-backup failed: {error}");
+        warnings.push(format!(
+            "Automatic backup failed. Create a manual backup in Settings before entering new work. ({})",
+            error.user_message()
+        ));
+    }
+
+    // Generate any recurring invoices that came due while the app was closed. Drafts only —
+    // nothing is issued without the user.
+    match recurring::run_due_now(pool).await {
+        Ok(report) => warnings.extend(report.problems),
+        Err(error) => {
+            eprintln!("recurring generation failed: {error}");
+            warnings.push(format!(
+                "Recurring invoices could not be generated. Review Recurring invoices and try Generate due now. ({})",
+                error.user_message()
+            ));
+        }
+    }
+
+    if warnings.is_empty() {
+        return;
+    }
+    let existing = meta::get(pool, "startup.warning")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let combined = [existing.trim().to_owned(), warnings.join("\n")]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(error) = meta::set(pool, "startup.warning", &combined).await {
+        eprintln!("could not store startup warning state: {error}");
+    }
 }
 
 fn contains_backups(dir: &Path) -> bool {
@@ -103,7 +143,8 @@ async fn embed_legacy_logo(pool: &Db, warnings: &mut Vec<String>) {
     match settings::get_logo_asset(pool).await {
         Ok(Some(_)) => {}
         Err(error) => warnings.push(format!(
-            "The stored business logo needs attention. Re-import it in Settings. ({error})"
+            "The stored business logo needs attention. Re-import it in Settings. ({})",
+            error.user_message()
         )),
         Ok(None) => {
             let Ok(current) = settings::get(pool).await else {

@@ -29,6 +29,50 @@ pub async fn backup(db: &Db, dest: &Path) -> Result<(), DataError> {
     Ok(())
 }
 
+/// Write a backup to `dest`, replacing a file the user has chosen to overwrite. The copy is written
+/// beside it first and then renamed over it, so an interrupted backup never leaves a half-written
+/// file where a good one was.
+pub async fn backup_replacing(db: &Db, dest: &Path) -> Result<(), DataError> {
+    let file_name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| DataError::Other("choose a file name for the backup".into()))?;
+    let partial = dest.with_file_name(format!(".{file_name}.{}.partial", std::process::id()));
+    let _ = std::fs::remove_file(&partial);
+    if let Err(error) = backup(db, &partial).await {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+    std::fs::rename(&partial, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        DataError::Other(format!("could not save the backup there: {e}"))
+    })
+}
+
+/// Copy the database at `src` into a new file at `dest` through SQLite (`VACUUM INTO` from a
+/// read-only connection), so committed changes still in `src`'s write-ahead log are included —
+/// a plain file copy would silently drop them.
+pub async fn copy_database(src: &Path, dest: &Path) -> Result<(), DataError> {
+    if dest.exists() {
+        return Err(DataError::Other(
+            "the copy's destination already exists".into(),
+        ));
+    }
+    let mut conn = SqliteConnectOptions::new()
+        .filename(src)
+        .read_only(true)
+        .create_if_missing(false)
+        .connect()
+        .await?;
+    let result = sqlx::query("VACUUM INTO ?")
+        .bind(dest.to_string_lossy().into_owned())
+        .execute(&mut conn)
+        .await;
+    conn.close().await?;
+    result?;
+    Ok(())
+}
+
 /// Flush every WAL frame into the main database file before that file is moved on its own.
 pub async fn checkpoint(db: &Db) -> Result<(), DataError> {
     let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")

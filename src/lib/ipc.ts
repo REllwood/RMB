@@ -41,8 +41,10 @@ export const ipc = {
   // app meta + backup
   getMeta: (key: string) => invoke<string | null>("get_meta", { key }),
   setMeta: (key: string, value: string) => invoke<void>("set_meta", { key, value }),
+  dismissStartupWarning: () => invoke<void>("dismiss_startup_warning"),
   backupDatabase: (dest: string) => invoke<void>("backup_database", { dest }),
   restoreDatabase: (src: string) => invoke<void>("restore_database", { src }),
+  backupFolder: () => invoke<string>("backup_folder"),
 
   // settings + tax
   getSettings: () => invoke<Settings>("get_settings"),
