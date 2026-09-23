@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Mail, MapPin, Pencil, Phone, Plus, Trash2 } from "lucide-react";
 
+import { useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { Customer, CustomerInput } from "@/lib/types";
@@ -29,7 +30,7 @@ const EMPTY: CustomerInput = { name: "", email: "", phone: "", billing_address: 
 type View = { mode: "list" } | { mode: "detail"; id: number };
 
 export function CustomersPage() {
-  const [view, setView] = useState<View>({ mode: "list" });
+  const [view, setView] = useView<View>({ mode: "list" });
 
   return (
     <div className="space-y-6">

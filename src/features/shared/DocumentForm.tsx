@@ -57,6 +57,8 @@ export function DocumentForm({
   const [notes, setNotes] = useState(initial?.notes ?? "");
   // Lines start once tax rates load so new documents default to the business's main rate.
   const [edited, setEdited] = useState<EditLine[] | null>(initial?.lines ?? null);
+  // Problems are shown once the user tries to save, not while a new form is still being filled.
+  const [attempted, setAttempted] = useState(false);
 
   const listKey = isInvoice ? ["invoices"] : ["quotes"];
   const detailKey = initial ? [isInvoice ? "invoice" : "quote", initial.id] : null;
@@ -111,6 +113,7 @@ export function DocumentForm({
   const totals = previewTotals(lines);
 
   async function onSave() {
+    setAttempted(true);
     if (customerId === null || payload.length === 0 || lineProblems) return;
     try {
       const id = await save.mutateAsync({ customerId, lines: payload, date: date || null, notes });
@@ -131,7 +134,12 @@ export function DocumentForm({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid max-w-xl gap-4 sm:grid-cols-2">
-          <Field label="Customer" required hint={initial?.customerLockedReason}>
+          <Field
+            label="Customer"
+            required
+            hint={initial?.customerLockedReason}
+            error={attempted && customerId === null ? "Choose a customer" : undefined}
+          >
             {(p) => (
               <Select
                 {...p}
@@ -163,7 +171,7 @@ export function DocumentForm({
           taxes={taxes}
           items={items}
           idPrefix={kind}
-          issues={lineIssues}
+          issues={attempted ? lineIssues : []}
           defaultTaxRateId={defaultTaxRateId}
         />
 
@@ -183,7 +191,7 @@ export function DocumentForm({
         <div className="flex gap-2">
           <Button
             onClick={onSave}
-            disabled={customerId === null || payload.length === 0 || lineProblems}
+            disabled={payload.length === 0}
             loading={save.isPending}
             loadingLabel="Saving…"
           >

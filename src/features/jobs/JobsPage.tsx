@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { LoaderCircle, Plus, Trash2, X } from "lucide-react";
 
+import { useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { JobMaterialInput, TimeEntryInput } from "@/lib/types";
@@ -57,7 +58,7 @@ function JobStatusBadge({ status }: { status: string }) {
 }
 
 export function JobsPage() {
-  const [view, setView] = useState<View>({ mode: "list" });
+  const [view, setView] = useView<View>({ mode: "list" });
   return (
     <div className="space-y-6">
       <PageHeader
@@ -265,6 +266,11 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   const [mPrice, setMPrice] = useState("0.00");
   const [mTax, setMTax] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<null | "invoice" | "delete">(null);
+  const [removing, setRemoving] = useState<null | {
+    kind: "time" | "material";
+    id: number;
+    label: string;
+  }>(null);
 
   if (q.isLoading || taxQ.isLoading || itemsQ.isLoading || settingsQ.isLoading) return <Loading />;
   const loadError = q.error ?? taxQ.error ?? itemsQ.error ?? settingsQ.error;
@@ -439,9 +445,14 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => delTime.mutate(t.id)}
-                            loading={delTime.isPending && delTime.variables === t.id}
-                            aria-label="Remove time entry"
+                            onClick={() =>
+                              setRemoving({
+                                kind: "time",
+                                id: t.id,
+                                label: `${t.date}, ${(t.minutes / 60).toFixed(2)} h`,
+                              })
+                            }
+                            aria-label={`Remove time entry ${t.date}, ${(t.minutes / 60).toFixed(2)} hours`}
                           >
                             <X className="size-4" />
                           </Button>
@@ -577,9 +588,14 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => delMaterial.mutate(m.id)}
-                            loading={delMaterial.isPending && delMaterial.variables === m.id}
-                            aria-label="Remove material"
+                            onClick={() =>
+                              setRemoving({
+                                kind: "material",
+                                id: m.id,
+                                label: `${m.quantity} × ${m.description}`,
+                              })
+                            }
+                            aria-label={`Remove material ${m.description}`}
                           >
                             <X className="size-4" />
                           </Button>
@@ -715,6 +731,25 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
         </CardContent>
       </Card>
 
+      <ConfirmDialog
+        open={removing !== null}
+        onClose={() => setRemoving(null)}
+        onConfirm={async () => {
+          if (!removing) return;
+          try {
+            if (removing.kind === "time") await delTime.mutateAsync(removing.id);
+            else await delMaterial.mutateAsync(removing.id);
+            setRemoving(null);
+          } catch {
+            // Keep the dialog open; the error is shown above it.
+          }
+        }}
+        title={removing?.kind === "time" ? "Remove this time entry?" : "Remove this material?"}
+        description={removing ? `${removing.label} will be removed from the job.` : undefined}
+        confirmLabel="Remove"
+        destructive
+        pending={delTime.isPending || delMaterial.isPending}
+      />
       <ConfirmDialog
         open={confirm === "invoice"}
         onClose={() => setConfirm(null)}

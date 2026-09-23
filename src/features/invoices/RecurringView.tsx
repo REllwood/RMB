@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 
+import { useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { RecurringInput, RecurringListRow, ResumePreview } from "@/lib/types";
@@ -46,7 +47,7 @@ type Mode = { kind: "list" } | { kind: "create" } | { kind: "edit"; id: number }
 
 /** Recurring invoice schedules — reached from the Invoices page. */
 export function RecurringView() {
-  const [mode, setMode] = useState<Mode>({ kind: "list" });
+  const [mode, setMode] = useView<Mode>({ kind: "list" });
   return (
     <div className="space-y-4">
       {mode.kind === "list" && (
@@ -342,6 +343,7 @@ function ScheduleForm({
   const [dueDays, setDueDays] = useState(s ? (s.due_days == null ? "" : String(s.due_days)) : "14");
   const [notes, setNotes] = useState(s?.notes ?? "");
   const [edited, setEdited] = useState<EditLine[] | null>(initial ? fromRows(initial.lines) : null);
+  const [attempted, setAttempted] = useState(false);
 
   const save = useIpcMutation(
     async (v: { input: RecurringInput; lines: ReturnType<typeof toLineInputs> }) => {
@@ -389,6 +391,7 @@ function ScheduleForm({
     !lineProblems;
 
   async function onSave() {
+    setAttempted(true);
     if (!valid || customerId === null) return;
     try {
       await save.mutateAsync({
@@ -423,7 +426,9 @@ function ScheduleForm({
             error={
               customerMissing
                 ? "This customer has been deleted — choose another customer"
-                : undefined
+                : attempted && customerId === null
+                  ? "Choose a customer"
+                  : undefined
             }
           >
             {(p) => (
@@ -514,14 +519,14 @@ function ScheduleForm({
           taxes={taxes}
           items={items}
           idPrefix="rec"
-          issues={lineIssues}
+          issues={attempted ? lineIssues : []}
           defaultTaxRateId={defaultTaxRateId}
         />
 
         <div className="flex gap-2">
           <Button
             onClick={onSave}
-            disabled={!valid}
+            disabled={payload.length === 0}
             loading={save.isPending}
             loadingLabel="Saving…"
           >

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { FileDown, Hammer, Pencil, Plus, Receipt, Trash2 } from "lucide-react";
 
+import { useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import { useMoneyFormat } from "@/lib/money";
@@ -46,7 +47,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function QuotesPage() {
-  const [view, setView] = useState<View>({ mode: "list" });
+  const [view, setView] = useView<View>({ mode: "list" });
   return (
     <div className="space-y-6">
       <PageHeader
@@ -203,6 +204,7 @@ function QuoteDetailView({
     successMessage: "Quote deleted",
   });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [action, setAction] = useState<QuoteAction | null>(null);
   const [exporting, setExporting] = useState(false);
 
   if (q.isLoading) return <Loading />;
@@ -295,24 +297,23 @@ function QuoteDetailView({
               >
                 Mark sent
               </Button>
+              <Button variant="outline" onClick={() => setAction("accepted")}>
+                Mark accepted
+              </Button>
+              <Button variant="ghost" onClick={() => setAction("declined")}>
+                Decline
+              </Button>
             </>
           )}
           {quote.status === "sent" && (
             <>
-              <Button
-                onClick={() => setStatus.mutate("accepted")}
-                disabled={setStatus.isPending}
-                loading={setStatus.isPending && setStatus.variables === "accepted"}
-                loadingLabel="Updating…"
-              >
+              <Button onClick={() => setAction("accepted")} disabled={setStatus.isPending}>
                 Mark accepted
               </Button>
               <Button
                 variant="outline"
-                onClick={() => setStatus.mutate("declined")}
+                onClick={() => setAction("declined")}
                 disabled={setStatus.isPending}
-                loading={setStatus.isPending && setStatus.variables === "declined"}
-                loadingLabel="Updating…"
               >
                 Decline
               </Button>
@@ -327,10 +328,8 @@ function QuoteDetailView({
               </Button>
               <Button
                 variant="ghost"
-                onClick={() => setStatus.mutate("expired")}
+                onClick={() => setAction("expired")}
                 disabled={setStatus.isPending}
-                loading={setStatus.isPending && setStatus.variables === "expired"}
-                loadingLabel="Updating…"
               >
                 Mark expired
               </Button>
@@ -338,30 +337,13 @@ function QuoteDetailView({
           )}
           {quote.status === "accepted" && (
             <>
-              <Button
-                onClick={() => convert.mutate(undefined)}
-                disabled={toJob.isPending || setStatus.isPending}
-                loading={convert.isPending}
-                loadingLabel="Converting…"
-              >
+              <Button onClick={() => setAction("to-invoice")}>
                 <Receipt className="size-4" /> Convert to invoice
               </Button>
-              <Button
-                variant="outline"
-                onClick={() => toJob.mutate(undefined)}
-                disabled={convert.isPending || setStatus.isPending}
-                loading={toJob.isPending}
-                loadingLabel="Converting…"
-              >
+              <Button variant="outline" onClick={() => setAction("to-job")}>
                 <Hammer className="size-4" /> Convert to job
               </Button>
-              <Button
-                variant="ghost"
-                onClick={() => setStatus.mutate("declined")}
-                disabled={convert.isPending || toJob.isPending || setStatus.isPending}
-                loading={setStatus.isPending && setStatus.variables === "declined"}
-                loadingLabel="Updating…"
-              >
+              <Button variant="ghost" onClick={() => setAction("declined")}>
                 Decline
               </Button>
             </>
@@ -388,6 +370,24 @@ function QuoteDetailView({
         </div>
       </CardContent>
 
+      {action && (
+        <ConfirmDialog
+          open
+          onClose={() => setAction(null)}
+          onConfirm={async () => {
+            try {
+              if (action === "to-invoice") await convert.mutateAsync(undefined);
+              else if (action === "to-job") await toJob.mutateAsync(undefined);
+              else await setStatus.mutateAsync(action);
+              setAction(null);
+            } catch {
+              // Keep the dialog open; the error is shown above it.
+            }
+          }}
+          {...QUOTE_ACTIONS[action]}
+          pending={setStatus.isPending || convert.isPending || toJob.isPending}
+        />
+      )}
       <ConfirmDialog
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
@@ -408,6 +408,45 @@ function QuoteDetailView({
     </Card>
   );
 }
+
+type QuoteAction = "accepted" | "declined" | "expired" | "to-invoice" | "to-job";
+
+/** Each quote action can't be undone, so each is confirmed with what it means. */
+const QUOTE_ACTIONS: Record<
+  QuoteAction,
+  { title: string; description: string; confirmLabel: string; destructive?: boolean }
+> = {
+  accepted: {
+    title: "Mark this quote accepted?",
+    description:
+      "An accepted quote can no longer be edited. You can then convert it to an invoice or a job.",
+    confirmLabel: "Mark accepted",
+  },
+  declined: {
+    title: "Decline this quote?",
+    description: "A declined quote is closed for good. It can be deleted but not reopened.",
+    confirmLabel: "Decline quote",
+    destructive: true,
+  },
+  expired: {
+    title: "Mark this quote expired?",
+    description: "An expired quote is closed for good. It can be deleted but not reopened.",
+    confirmLabel: "Mark expired",
+    destructive: true,
+  },
+  "to-invoice": {
+    title: "Convert to an invoice?",
+    description:
+      "A draft invoice is created from this quote's lines for you to review. The quote can then no longer become a job.",
+    confirmLabel: "Create draft invoice",
+  },
+  "to-job": {
+    title: "Convert to a job?",
+    description:
+      "A job is created with this quote's lines as its materials, ready for time to be logged. The quote can then no longer become an invoice directly.",
+    confirmLabel: "Create job",
+  },
+};
 
 function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
