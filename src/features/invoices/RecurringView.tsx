@@ -4,7 +4,7 @@ import { Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { RecurringInput, RecurringListRow, ResumePreview } from "@/lib/types";
-import { useMoneyFormat } from "@/lib/money";
+import { parseWholeNumber, useMoneyFormat } from "@/lib/money";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -331,6 +331,7 @@ function ScheduleForm({
   const customersQ = useIpcQuery(["customers", ""], () => ipc.listCustomers());
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
+  const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
 
   const s = initial?.schedule;
   const [customerId, setCustomerId] = useState<number | null>(s?.customer_id ?? null);
@@ -351,7 +352,8 @@ function ScheduleForm({
     { successMessage: initial ? "Schedule updated" : "Schedule created" },
   );
 
-  if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading) return <Loading />;
+  if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading || settingsQ.isLoading)
+    return <Loading />;
   const loadError = customersQ.error ?? taxQ.error ?? itemsQ.error;
   if (loadError)
     return (
@@ -367,14 +369,14 @@ function ScheduleForm({
 
   const taxes = taxQ.data ?? [];
   const items = itemsQ.data ?? [];
-  const lines = edited ?? [emptyLine(taxes)];
+  const defaultTaxRateId = settingsQ.data?.default_tax_rate_id ?? null;
+  const lines = edited ?? [emptyLine(taxes, defaultTaxRateId)];
   const lineIssues = validateEditLines(lines, items);
   const lineProblems = hasLineIssues(lineIssues);
   const payload = toLineInputs(lines);
-  const parsedDueDays = dueDays.trim() === "" ? null : Number(dueDays);
-  const dueDaysValid =
-    parsedDueDays === null ||
-    (Number.isInteger(parsedDueDays) && parsedDueDays >= 0 && parsedDueDays <= 3_650);
+  const parsedDueDays =
+    dueDays.trim() === "" ? null : parseWholeNumber(dueDays, { min: 0, max: 3_650 });
+  const dueDaysValid = dueDays.trim() === "" || parsedDueDays !== null;
   const datesValid = Boolean(nextDate) && (!endDate || endDate >= nextDate);
   const customerMissing =
     customerId !== null && !(customersQ.data ?? []).some((c) => c.id === customerId);
@@ -513,6 +515,7 @@ function ScheduleForm({
           items={items}
           idPrefix="rec"
           issues={lineIssues}
+          defaultTaxRateId={defaultTaxRateId}
         />
 
         <div className="flex gap-2">

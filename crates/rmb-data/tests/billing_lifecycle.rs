@@ -272,3 +272,64 @@ async fn extreme_or_long_time_entries_fail_cleanly(pool: Db) -> Result<(), DataE
     assert!(lines.iter().all(|l| l.description.chars().count() <= 2_000));
     Ok(())
 }
+
+#[sqlx::test]
+async fn the_job_total_matches_the_invoice_it_produces(pool: Db) -> Result<(), DataError> {
+    let c = customer(&pool, "Acme").await;
+    let job = jobs::create(
+        &pool,
+        &jobs::JobInput {
+            customer_id: c,
+            title: "Fit-out".into(),
+            description: String::new(),
+        },
+    )
+    .await?;
+    jobs::add_time(
+        &pool,
+        job,
+        &jobs::TimeEntryInput {
+            date: "2026-06-01".into(),
+            minutes: 90,
+            rate_minor: 6000,
+            description: String::new(),
+            tax_rate_name: "GST 10%".into(),
+            tax_rate_bp: 1000,
+            tax_inclusive: false,
+        },
+    )
+    .await?;
+    jobs::add_material(
+        &pool,
+        job,
+        &jobs::JobMaterialInput {
+            item_id: None,
+            description: "Cable".into(),
+            quantity: "3".into(),
+            unit_price_minor: 1100,
+            tax_rate_name: "GST 10%".into(),
+            tax_rate_bp: 1000,
+            tax_inclusive: true,
+        },
+    )
+    .await?;
+
+    let detail = jobs::get_detail(&pool, job).await?.unwrap();
+    // Labour 9000 + 900 tax; materials 3300 inclusive = 3000 + 300.
+    assert_eq!(detail.subtotal_minor, 12000);
+    assert_eq!(detail.tax_minor, 1200);
+    assert_eq!(detail.total_minor, 13200);
+    assert_eq!(detail.unbilled_total_minor, 13200);
+
+    let invoice = jobs::invoice_from_job(&pool, job).await?;
+    let billed = invoices::get_detail(&pool, invoice).await?.unwrap().invoice;
+    assert_eq!(billed.total_minor, detail.total_minor);
+    assert_eq!(
+        jobs::get_detail(&pool, job)
+            .await?
+            .unwrap()
+            .unbilled_total_minor,
+        0
+    );
+    Ok(())
+}

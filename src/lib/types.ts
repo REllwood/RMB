@@ -16,6 +16,10 @@ export interface Settings {
   quote_prefix: string;
   quote_next_seq: number;
   number_pad: number;
+  /** Tax rate new lines start with; null falls back to the first non-zero rate. */
+  default_tax_rate_id: number | null;
+  /** Read-only: an invoice has been issued, so the currency can no longer change. */
+  currency_locked: boolean;
 }
 
 export interface TaxRate {
@@ -239,6 +243,12 @@ export interface JobDetail {
   materials: JobMaterial[];
   labour_total_minor: number;
   materials_total_minor: number;
+  /** The whole job with tax applied per line, as its invoice would be. */
+  subtotal_minor: number;
+  tax_minor: number;
+  total_minor: number;
+  /** Total (with tax) of the work not yet invoiced. */
+  unbilled_total_minor: number;
 }
 
 export interface CustomerHistory {

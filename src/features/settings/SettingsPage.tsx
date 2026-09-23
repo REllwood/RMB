@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { LoaderCircle } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -24,6 +23,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ErrorState, Loading } from "@/components/ui/states";
+import { parsePercentToBp, parseWholeNumber } from "@/lib/money";
+import { formatNumberPreview } from "@/lib/format";
 
 const CURRENCIES = ["USD", "GBP", "EUR", "AUD", "NZD", "CAD"];
 const COUNTRIES: [string, string][] = [
@@ -54,7 +55,20 @@ export function SettingsPage() {
   const clearLogoMut = useIpcMutation(() => ipc.clearLogo(), [["settings"]], {
     successMessage: "Logo removed",
   });
-  const presetMut = useIpcMutation((c: string) => ipc.applyTaxPreset(c), [["tax-rates"]]);
+  const presetMut = useIpcMutation(
+    (c: string) => ipc.applyTaxPreset(c),
+    [["tax-rates"], ["settings"]],
+    { successMessage: "Preset rates added" },
+  );
+  const defaultTaxMut = useIpcMutation(
+    (id: number | null) => {
+      const saved = settingsQ.data;
+      if (!saved) throw new Error("Settings are still loading");
+      return ipc.updateSettings({ ...saved, default_tax_rate_id: id });
+    },
+    [["settings"]],
+    { successMessage: "Default tax rate saved" },
+  );
   const addTaxMut = useIpcMutation(
     (r: { name: string; bp: number; inc: boolean }) => ipc.createTaxRate(r.name, r.bp, r.inc),
     [["tax-rates"]],
@@ -73,6 +87,8 @@ export function SettingsPage() {
 
   const [taxName, setTaxName] = useState("");
   const [taxPct, setTaxPct] = useState("");
+  const [taxInclusive, setTaxInclusive] = useState<boolean | null>(null);
+  const [padText, setPadText] = useState<string | null>(null);
   const [taxDraft, setTaxDraft] = useState<TaxDraft | null>(null);
   const [presetCountry, setPresetCountry] = useState("");
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
@@ -84,6 +100,11 @@ export function SettingsPage() {
   if (settingsQ.error)
     return <ErrorState error={settingsQ.error} onRetry={() => settingsQ.refetch()} />;
 
+  const padError =
+    padText !== null && parseWholeNumber(padText, { min: 1, max: 12 }) === null
+      ? "Enter a whole number from 1 to 12"
+      : undefined;
+
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
   }
@@ -93,6 +114,7 @@ export function SettingsPage() {
     setStatus("");
     try {
       await saveMut.mutateAsync(form);
+      setPadText(null);
       setStatus("Settings saved.");
     } catch {
       // useIpcMutation has already shown the backend error.
@@ -139,30 +161,39 @@ export function SettingsPage() {
     }
   }
 
+  const newRateBp = parsePercentToBp(taxPct);
+  const newRateError =
+    taxPct.trim() && newRateBp === null
+      ? "Enter a percentage from 0 to 1,000 with at most two decimal places"
+      : undefined;
+  // New rates follow the saved "prices include tax" setting unless changed here.
+  const newRateInclusive = taxInclusive ?? settingsQ.data?.prices_tax_inclusive ?? false;
+
   async function onAddTax() {
-    const pct = Number(taxPct);
-    if (!taxName.trim() || !Number.isFinite(pct) || pct < 0 || pct > 1_000) return;
+    if (!taxName.trim() || newRateBp === null) return;
     try {
       await addTaxMut.mutateAsync({
         name: taxName.trim(),
-        bp: Math.round(pct * 100),
-        inc: form?.prices_tax_inclusive ?? false,
+        bp: newRateBp,
+        inc: newRateInclusive,
       });
       setTaxName("");
       setTaxPct("");
+      setTaxInclusive(null);
     } catch {
       // useIpcMutation has already shown the backend error.
     }
   }
 
   async function onApplyPreset(country: string) {
-    setPresetCountry(country);
     try {
       await presetMut.mutateAsync(country);
+      setPresetCountry("");
+      // The first preset also chooses the default rate for new lines.
+      const refreshed = await settingsQ.refetch();
+      if (refreshed.data) set("default_tax_rate_id", refreshed.data.default_tax_rate_id);
     } catch {
       // useIpcMutation has already shown the backend error.
-    } finally {
-      setPresetCountry("");
     }
   }
 
@@ -175,17 +206,21 @@ export function SettingsPage() {
     });
   }
 
+  const draftRateBp = taxDraft ? parsePercentToBp(taxDraft.percent) : null;
+  const draftRateError =
+    taxDraft && draftRateBp === null
+      ? "Enter a percentage from 0 to 1,000 with at most two decimal places"
+      : taxDraft && !taxDraft.name.trim()
+        ? "Enter a name"
+        : undefined;
+
   async function onSaveTax() {
-    if (!taxDraft) return;
-    const percent = Number(taxDraft.percent);
-    if (!taxDraft.name.trim() || !Number.isFinite(percent) || percent < 0 || percent > 1_000) {
-      return;
-    }
+    if (!taxDraft || draftRateError || draftRateBp === null) return;
     try {
       await editTaxMut.mutateAsync({
         id: taxDraft.id,
         name: taxDraft.name.trim(),
-        bp: Math.round(percent * 100),
+        bp: draftRateBp,
         inc: taxDraft.inclusive,
       });
       setTaxDraft(null);
@@ -264,10 +299,18 @@ export function SettingsPage() {
               <Input {...p} value={form.phone} onChange={(e) => set("phone", e.target.value)} />
             )}
           </Field>
-          <Field label="Currency">
+          <Field
+            label="Currency"
+            hint={
+              form.currency_locked
+                ? "Locked once an invoice has been issued, so totals never mix currencies."
+                : "Choose before you issue your first invoice."
+            }
+          >
             {(p) => (
               <Select
                 {...p}
+                disabled={form.currency_locked}
                 value={form.currency}
                 onChange={(e) => set("currency", e.target.value)}
               >
@@ -324,15 +367,26 @@ export function SettingsPage() {
               />
             )}
           </Field>
-          <Field label="Number padding" hint="Digits after the prefix, from 1 to 12">
+          <Field
+            label="Number padding"
+            error={padError}
+            hint={
+              padError
+                ? undefined
+                : `Digits after the prefix. Next invoice: ${formatNumberPreview(form.invoice_prefix, form.invoice_next_seq, form.number_pad)}`
+            }
+          >
             {(p) => (
               <Input
                 {...p}
-                type="number"
-                min={1}
-                max={12}
-                value={form.number_pad}
-                onChange={(e) => set("number_pad", Number(e.target.value))}
+                inputMode="numeric"
+                className="w-24"
+                value={padText ?? String(form.number_pad)}
+                onChange={(e) => {
+                  setPadText(e.target.value);
+                  const pad = parseWholeNumber(e.target.value, { min: 1, max: 12 });
+                  if (pad !== null) set("number_pad", pad);
+                }}
               />
             )}
           </Field>
@@ -342,7 +396,7 @@ export function SettingsPage() {
               checked={form.prices_tax_inclusive}
               onChange={(e) => set("prices_tax_inclusive", e.target.checked)}
             />
-            Prices include tax by default
+            New tax rates are tax-inclusive (prices already include the tax)
           </label>
           <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
             <span className="text-sm font-medium">Logo</span>
@@ -380,7 +434,7 @@ export function SettingsPage() {
         <CardContent className="flex items-center gap-3 border-t pt-4">
           <Button
             onClick={onSave}
-            disabled={!form.business_name.trim()}
+            disabled={Boolean(padError)}
             loading={saveMut.isPending}
             loadingLabel="Saving…"
           >
@@ -404,13 +458,13 @@ export function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-end gap-2">
-            <Field label="Seed a preset">
+            <Field label="Add a country preset">
               {(p) => (
                 <Select
                   {...p}
                   value={presetCountry}
                   disabled={presetMut.isPending}
-                  onChange={(e) => e.target.value && void onApplyPreset(e.target.value)}
+                  onChange={(e) => setPresetCountry(e.target.value)}
                   className="w-72"
                 >
                   <option value="" disabled>
@@ -424,14 +478,45 @@ export function SettingsPage() {
                 </Select>
               )}
             </Field>
-            {presetMut.isPending && (
-              <span
-                role="status"
-                className="flex h-9 items-center gap-2 text-sm text-muted-foreground"
+            <Button
+              variant="outline"
+              onClick={() => presetCountry && void onApplyPreset(presetCountry)}
+              disabled={!presetCountry}
+              loading={presetMut.isPending}
+              loadingLabel="Adding rates…"
+            >
+              Add preset rates
+            </Button>
+            {taxQ.data && taxQ.data.length > 0 && (
+              <Field
+                label="Default for new lines"
+                hint="The tax new invoice, quote and job lines start with"
               >
-                <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-                Applying preset…
-              </span>
+                {(p) => (
+                  <Select
+                    {...p}
+                    className="w-56"
+                    value={form.default_tax_rate_id ?? ""}
+                    disabled={defaultTaxMut.isPending}
+                    onChange={async (e) => {
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      try {
+                        await defaultTaxMut.mutateAsync(id);
+                        set("default_tax_rate_id", id);
+                      } catch {
+                        // useIpcMutation has already shown the backend error.
+                      }
+                    }}
+                  >
+                    <option value="">Automatic (first non-zero rate)</option>
+                    {taxQ.data.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
             )}
           </div>
 
@@ -465,11 +550,22 @@ export function SettingsPage() {
                       <TableCell>
                         <Input
                           aria-label="Tax rate percentage"
+                          aria-invalid={Boolean(draftRateError)}
+                          aria-describedby={draftRateError ? "tax-edit-error" : undefined}
                           className="w-24"
                           inputMode="decimal"
                           value={taxDraft.percent}
                           onChange={(e) => setTaxDraft({ ...taxDraft, percent: e.target.value })}
                         />
+                        {draftRateError && (
+                          <p
+                            id="tax-edit-error"
+                            role="alert"
+                            className="mt-1 text-xs text-destructive"
+                          >
+                            {draftRateError}
+                          </p>
+                        )}
                       </TableCell>
                       <TableCell>
                         <label className="flex items-center gap-2 text-sm">
@@ -487,6 +583,7 @@ export function SettingsPage() {
                         <Button
                           size="sm"
                           onClick={onSaveTax}
+                          disabled={Boolean(draftRateError)}
                           loading={editTaxMut.isPending}
                           loadingLabel="Saving…"
                         >
@@ -543,15 +640,7 @@ export function SettingsPage() {
                 />
               )}
             </Field>
-            <Field
-              label="Rate %"
-              error={
-                taxPct &&
-                (!Number.isFinite(Number(taxPct)) || Number(taxPct) < 0 || Number(taxPct) > 1_000)
-                  ? "Enter a value from 0 to 1,000"
-                  : undefined
-              }
-            >
+            <Field label="Rate %" error={newRateError}>
               {(p) => (
                 <Input
                   {...p}
@@ -563,10 +652,18 @@ export function SettingsPage() {
                 />
               )}
             </Field>
+            <label className="flex h-9 items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={newRateInclusive}
+                onChange={(e) => setTaxInclusive(e.target.checked)}
+              />
+              Prices include this tax
+            </label>
             <Button
               variant="outline"
               onClick={onAddTax}
-              disabled={!taxName.trim() || !taxPct}
+              disabled={!taxName.trim() || newRateBp === null}
               loading={addTaxMut.isPending}
               loadingLabel="Adding…"
             >

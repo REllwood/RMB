@@ -72,8 +72,17 @@ pub async fn record_payment(
     amount_minor: i64,
     method: String,
     reference: String,
+    date: Option<String>,
 ) -> Result<i64, AppError> {
-    Ok(payments::record_payment(&db, invoice_id, amount_minor, &method, &reference).await?)
+    Ok(payments::record_payment_dated(
+        &db,
+        invoice_id,
+        amount_minor,
+        &method,
+        &reference,
+        date.as_deref(),
+    )
+    .await?)
 }
 
 #[tauri::command]

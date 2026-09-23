@@ -1,5 +1,5 @@
 import type { Item, LineInput, TaxRate } from "@/lib/types";
-import { minorToInput, parseMoney } from "@/lib/money";
+import { lineAmountMinor, lineTaxMinor, minorToInput, parseDecimal, parseMoney } from "@/lib/money";
 
 /** Tax applied to a line — carried by value so archived/legacy rates survive editing. */
 export type TaxChoice = { name: string; bp: number; inclusive: boolean };
@@ -35,19 +35,45 @@ export function hasLineIssues(issues: LineIssue[]): boolean {
 
 export const taxKey = (t: TaxChoice) => `${t.name}|${t.bp}|${t.inclusive ? 1 : 0}`;
 
+/** "VAT 20% (20%)" is noisy, so the rate is only appended when the name doesn't already say it. */
+export function taxLabel(t: TaxChoice): string {
+  const percent = `${Number((t.bp / 100).toFixed(2))}%`;
+  const detail = t.inclusive ? `${percent}, incl.` : percent;
+  return t.name.includes(percent) && !t.inclusive ? t.name : `${t.name} (${detail})`;
+}
+
 export function toChoice(t: TaxRate): TaxChoice {
   return { name: t.name, bp: t.rate_bp, inclusive: t.inclusive };
 }
 
-/** A fresh line, defaulting to the business's first tax rate (e.g. GST) when one exists. */
-export function emptyLine(taxes: TaxRate[]): EditLine {
-  const first = taxes.find((t) => !t.archived);
+/**
+ * The tax a new line starts with: the business's chosen default rate, otherwise its first
+ * non-zero rate (so a UK business starts on VAT 20%, not "No Tax"), otherwise No Tax.
+ */
+export function defaultTax(taxes: TaxRate[], defaultTaxRateId?: number | null): TaxChoice {
+  const active = taxes.filter((t) => !t.archived);
+  const chosen = active.find((t) => t.id === defaultTaxRateId) ?? active.find((t) => t.rate_bp > 0);
+  return chosen ? toChoice(chosen) : NO_TAX;
+}
+
+/** The tax options for a line: No Tax, the active rates, and the line's own rate if it's retired. */
+export function taxOptions(taxes: TaxRate[], current?: TaxChoice): TaxChoice[] {
+  const options: TaxChoice[] = [NO_TAX];
+  for (const rate of taxes.filter((t) => !t.archived).map(toChoice)) {
+    if (!options.some((o) => taxKey(o) === taxKey(rate))) options.push(rate);
+  }
+  if (current && !options.some((o) => taxKey(o) === taxKey(current))) options.unshift(current);
+  return options;
+}
+
+/** A fresh line on the business's default tax. */
+export function emptyLine(taxes: TaxRate[], defaultTaxRateId?: number | null): EditLine {
   return {
     item_id: null,
     description: "",
     quantity: "1",
     price: "0.00",
-    tax: first ? toChoice(first) : NO_TAX,
+    tax: defaultTax(taxes, defaultTaxRateId),
   };
 }
 
@@ -72,12 +98,43 @@ export function fromRows(
   }));
 }
 
+/** Most quantities fit in 10 decimal places; the backend allows up to 1,000,000,000 units. */
+const MAX_QUANTITY_DECIMALS = 10;
+
+/** A positive quantity as a normalised decimal string ("1,5" → "1.5"), or null. */
 export function normaliseQuantity(value: string): string | null {
-  const normalised = value.trim().replace(",", ".");
-  if (!/^\d+(?:\.\d+)?$/.test(normalised)) return null;
-  const numeric = Number(normalised);
-  if (!Number.isFinite(numeric) || numeric <= 0 || numeric > 1_000_000_000) return null;
+  const normalised = parseDecimal(value, MAX_QUANTITY_DECIMALS);
+  if (normalised === null || normalised === "0" || normalised.startsWith("-")) return null;
+  const whole = normalised.split(".")[0];
+  if (whole.length > 10 || Number(normalised) > 1_000_000_000) return null;
   return normalised;
+}
+
+/** Tracked stock moves in whole units, so its quantity must have no fractional part. */
+export function isWholeQuantity(normalised: string): boolean {
+  return !normalised.includes(".");
+}
+
+/** The amount a line will carry, or 0 while its inputs are incomplete. */
+export function lineAmount(line: EditLine): number {
+  const quantity = normaliseQuantity(line.quantity);
+  const price = parseMoney(line.price);
+  return quantity === null || price === null ? 0 : lineAmountMinor(price, quantity);
+}
+
+/** Subtotal, tax and total for the lines, computed with the same per-line rules as the backend. */
+export function previewTotals(lines: EditLine[]): { subtotal: number; tax: number; total: number } {
+  return lines.reduce(
+    (sum, line) => {
+      const split = lineTaxMinor(lineAmount(line), line.tax.bp, line.tax.inclusive);
+      return {
+        subtotal: sum.subtotal + split.net,
+        tax: sum.tax + split.tax,
+        total: sum.total + split.gross,
+      };
+    },
+    { subtotal: 0, tax: 0, total: 0 },
+  );
 }
 
 /** Validate editable rows before an IPC call; the Rust boundary repeats these checks. */
@@ -100,7 +157,7 @@ export function validateEditLines(lines: EditLine[], items: Item[] = []): LineIs
       quantity:
         quantity === null
           ? "Enter a quantity greater than zero"
-          : item?.tracked && !Number.isInteger(Number(quantity))
+          : item?.tracked && !isWholeQuantity(quantity)
             ? "Tracked products need a whole quantity"
             : undefined,
       price:

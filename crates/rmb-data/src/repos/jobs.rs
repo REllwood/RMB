@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqliteConnection};
 
 use rmb_domain::status::JobStatus;
+use rmb_domain::tax::{line_tax, TaxRate};
+use rmb_domain::Money;
 
 use crate::db::{begin_write, Db};
 use crate::error::DataError;
@@ -87,8 +89,16 @@ pub struct JobDetail {
     pub job: Job,
     pub time_entries: Vec<TimeEntry>,
     pub materials: Vec<JobMaterial>,
+    /// Sum of labour line amounts (as entered: net for exclusive tax, gross for inclusive).
     pub labour_total_minor: i64,
+    /// Sum of material line amounts (as entered).
     pub materials_total_minor: i64,
+    /// The whole job with tax applied per line, exactly as its invoice would be.
+    pub subtotal_minor: i64,
+    pub tax_minor: i64,
+    pub total_minor: i64,
+    /// Total (with tax) of the time and materials not yet invoiced.
+    pub unbilled_total_minor: i64,
 }
 
 async fn claim_job_for_entry(conn: &mut SqliteConnection, id: i64) -> Result<(), DataError> {
@@ -511,12 +521,70 @@ pub async fn get_detail(db: &Db, id: i64) -> Result<Option<JobDetail>, DataError
             .ok_or_else(|| DataError::Other("materials total is too large".into()))?;
     }
 
+    // Totals with tax, per line, the same way the resulting invoice will compute them.
+    let (mut subtotal_minor, mut tax_minor, mut total_minor, mut unbilled_total_minor) =
+        (0_i64, 0_i64, 0_i64, 0_i64);
+    let entries = time_entries
+        .iter()
+        .map(|t| {
+            Ok((
+                labour_amount(t.minutes, t.rate_minor)?,
+                TaxRate::new(t.tax_rate_name.clone(), t.tax_rate_bp, t.tax_inclusive),
+                t.invoiced,
+            ))
+        })
+        .chain(materials.iter().map(|m| {
+            let qty = Decimal::from_str(m.quantity.trim()).unwrap_or(Decimal::ZERO);
+            let amount = Decimal::from(m.unit_price_minor)
+                .checked_mul(qty)
+                .and_then(|a| {
+                    a.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+                        .to_i64()
+                })
+                .ok_or_else(|| DataError::Other("material amount is too large".into()))?;
+            Ok((
+                amount,
+                TaxRate::new(m.tax_rate_name.clone(), m.tax_rate_bp, m.tax_inclusive),
+                m.invoiced,
+            ))
+        }))
+        .collect::<Result<Vec<_>, DataError>>()?;
+    for (amount, rate, invoiced) in entries {
+        if !(0..=100_000).contains(&rate.rate_bp)
+            || amount.unsigned_abs() > (i64::MAX / 11).unsigned_abs()
+        {
+            return Err(DataError::Other(
+                "job contains an entry that is out of range".into(),
+            ));
+        }
+        let split = line_tax(Money::from_minor(amount), &rate);
+        let overflow = || DataError::Other("job total is too large".into());
+        subtotal_minor = subtotal_minor
+            .checked_add(split.net.minor())
+            .ok_or_else(overflow)?;
+        tax_minor = tax_minor
+            .checked_add(split.tax.minor())
+            .ok_or_else(overflow)?;
+        total_minor = total_minor
+            .checked_add(split.gross.minor())
+            .ok_or_else(overflow)?;
+        if !invoiced {
+            unbilled_total_minor = unbilled_total_minor
+                .checked_add(split.gross.minor())
+                .ok_or_else(overflow)?;
+        }
+    }
+
     Ok(Some(JobDetail {
         job,
         time_entries,
         materials,
         labour_total_minor,
         materials_total_minor,
+        subtotal_minor,
+        tax_minor,
+        total_minor,
+        unbilled_total_minor,
     }))
 }
 
