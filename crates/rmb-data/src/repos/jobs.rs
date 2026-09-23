@@ -11,7 +11,7 @@ use sqlx::{FromRow, SqliteConnection};
 
 use rmb_domain::status::JobStatus;
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 use crate::repos::invoices::{self, LineInput};
 use crate::validation::valid_business_date;
@@ -104,11 +104,32 @@ async fn claim_job_for_entry(conn: &mut SqliteConnection, id: i64) -> Result<(),
         .ok_or_else(|| DataError::Other("job not found or it has already been invoiced".into()))
 }
 
+/// Longest single time entry accepted (about 694 days of minutes); bounds the labour arithmetic.
+const MAX_ENTRY_MINUTES: i64 = 1_000_000;
+
+/// Longest invoice line description (matches the document line limit).
+const MAX_LINE_DESCRIPTION: usize = 2_000;
+
 fn labour_amount(minutes: i64, rate_minor: i64) -> Result<i64, DataError> {
-    (Decimal::from(rate_minor) * Decimal::from(minutes) / Decimal::from(60))
-        .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
-        .to_i64()
+    Decimal::from(rate_minor)
+        .checked_mul(Decimal::from(minutes))
+        .and_then(|amount| amount.checked_div(Decimal::from(60)))
+        .and_then(|amount| {
+            amount
+                .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+                .to_i64()
+        })
         .ok_or_else(|| DataError::Other("labour amount is too large".into()))
+}
+
+/// Shorten generated text to fit a document line, marking the cut with an ellipsis.
+fn fit_description(text: String) -> String {
+    if text.chars().count() <= MAX_LINE_DESCRIPTION {
+        return text;
+    }
+    let mut clipped: String = text.chars().take(MAX_LINE_DESCRIPTION - 1).collect();
+    clipped.push('…');
+    clipped
 }
 
 pub async fn create(db: &Db, input: &JobInput) -> Result<i64, DataError> {
@@ -171,7 +192,7 @@ pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<Job>, Da
 pub async fn create_from_quote(db: &Db, quote_id: i64) -> Result<i64, DataError> {
     // Claim the accepted quote before reading its lines. This competes atomically with direct
     // invoice conversion, so one accepted quote can produce exactly one downstream record.
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let source: Option<(i64, Option<String>, String)> = sqlx::query_as(
         "UPDATE quote SET status = 'converted' \
          WHERE id = ? AND deleted_at IS NULL AND status = 'accepted' \
@@ -207,6 +228,34 @@ pub async fn create_from_quote(db: &Db, quote_id: i64) -> Result<i64, DataError>
     .await?;
     if lines.is_empty() {
         return Err(DataError::Other("accepted quote has no lines".into()));
+    }
+    // The materials must be billable later, so hold them to the same rules as `add_material`.
+    let inputs: Vec<LineInput> = lines
+        .iter()
+        .map(
+            |(item_id, description, quantity, price, tax_name, tax_bp, inclusive)| LineInput {
+                item_id: *item_id,
+                description: description.clone(),
+                quantity: quantity.clone(),
+                unit_price_minor: *price,
+                tax_rate_name: tax_name.clone(),
+                tax_rate_bp: *tax_bp,
+                tax_inclusive: *inclusive,
+            },
+        )
+        .collect();
+    invoices::validated_totals(&inputs)?;
+    invoices::validate_line_items(&mut tx, &inputs).await?;
+    for input in &inputs {
+        if let Some(item_id) = input.item_id {
+            let tracked: bool = sqlx::query_scalar("SELECT tracked FROM item WHERE id = ?")
+                .bind(item_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if tracked {
+                invoices::tracked_qty(&input.quantity)?;
+            }
+        }
     }
     for (item_id, description, quantity, price, tax_name, tax_bp, inclusive) in lines {
         sqlx::query(
@@ -261,21 +310,35 @@ pub async fn set_status(db: &Db, id: i64, status: &str) -> Result<(), DataError>
     Ok(())
 }
 
+/// Delete an empty job. A job created from a quote hands that quote back (to "accepted") so it can
+/// be converted again.
 pub async fn delete(db: &Db, id: i64) -> Result<(), DataError> {
-    let result = sqlx::query(
+    let mut tx = begin_write(db).await?;
+    let deleted: Option<Option<i64>> = sqlx::query_scalar(
         "UPDATE job SET deleted_at = datetime('now') \
          WHERE id = ? AND deleted_at IS NULL AND status != 'invoiced' \
            AND NOT EXISTS (SELECT 1 FROM time_entry WHERE job_id = job.id) \
-           AND NOT EXISTS (SELECT 1 FROM job_material WHERE job_id = job.id)",
+           AND NOT EXISTS (SELECT 1 FROM job_material WHERE job_id = job.id) \
+         RETURNING source_quote_id",
     )
     .bind(id)
-    .execute(db)
+    .fetch_optional(&mut *tx)
     .await?;
-    if result.rows_affected() != 1 {
+    let Some(source_quote_id) = deleted else {
         return Err(DataError::Other(
             "job not found, already invoiced, or still contains time or materials".into(),
         ));
+    };
+    if let Some(quote_id) = source_quote_id {
+        sqlx::query(
+            "UPDATE quote SET status = 'accepted' \
+             WHERE id = ? AND status = 'converted' AND converted_invoice_id IS NULL",
+        )
+        .bind(quote_id)
+        .execute(&mut *tx)
+        .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -285,10 +348,10 @@ pub async fn add_time(db: &Db, job_id: i64, t: &TimeEntryInput) -> Result<i64, D
             "time-entry date must be a valid YYYY-MM-DD date".into(),
         ));
     }
-    if t.minutes <= 0 {
-        return Err(DataError::Other(
-            "time-entry minutes must be greater than zero".into(),
-        ));
+    if t.minutes <= 0 || t.minutes > MAX_ENTRY_MINUTES {
+        return Err(DataError::Other(format!(
+            "time-entry minutes must be between 1 and {MAX_ENTRY_MINUTES}"
+        )));
     }
     if t.rate_minor < 0 {
         return Err(DataError::Other("hourly rate cannot be negative".into()));
@@ -308,7 +371,7 @@ pub async fn add_time(db: &Db, job_id: i64, t: &TimeEntryInput) -> Result<i64, D
         tax_inclusive: t.tax_inclusive,
     };
     let validated_line = invoices::to_doc_line(&validation_line)?;
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     claim_job_for_entry(&mut tx, job_id).await?;
     let id = sqlx::query(
         "INSERT INTO time_entry (job_id, date, minutes, rate_minor, description, tax_rate_name, tax_rate_bp, tax_inclusive) \
@@ -339,7 +402,7 @@ pub async fn add_material(db: &Db, job_id: i64, m: &JobMaterialInput) -> Result<
         tax_rate_bp: m.tax_rate_bp,
         tax_inclusive: m.tax_inclusive,
     })?;
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     claim_job_for_entry(&mut tx, job_id).await?;
     if let Some(item_id) = m.item_id {
         let item: Option<(String, bool)> =
@@ -463,7 +526,7 @@ pub async fn invoice_from_job(db: &Db, id: i64) -> Result<i64, DataError> {
     // Claim the job as the first write in this transaction. A concurrent second request waits,
     // then updates no row and exits, so the same time/materials can never produce two invoices.
     // Any later error rolls this status change back with the rest of the transaction.
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let customer_id: Option<i64> = sqlx::query_scalar(
         "UPDATE job SET status = 'invoiced' \
          WHERE id = ? AND deleted_at IS NULL AND status != 'invoiced' RETURNING customer_id",
@@ -497,7 +560,7 @@ pub async fn invoice_from_job(db: &Db, id: i64) -> Result<i64, DataError> {
         };
         lines.push(LineInput {
             item_id: None,
-            description: format!("{desc} — {} minutes", t.minutes),
+            description: fit_description(format!("{desc} — {} minutes", t.minutes)),
             quantity: "1".into(),
             unit_price_minor: labour_amount(t.minutes, t.rate_minor)?,
             tax_rate_name: t.tax_rate_name.clone(),

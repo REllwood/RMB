@@ -106,6 +106,13 @@ async fn has_pending_migrations(db: &Db) -> Result<bool, DataError> {
     Ok(MIGRATOR.iter().any(|m| !applied.contains(&m.version)))
 }
 
+/// Begin a write transaction. `BEGIN IMMEDIATE` takes SQLite's write lock up front (waiting up to
+/// the busy timeout), so a transaction that reads before it writes can never fail part-way with
+/// "database is locked" because another write committed first.
+pub async fn begin_write(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, DataError> {
+    Ok(db.begin_with("BEGIN IMMEDIATE").await?)
+}
+
 /// Today as `YYYY-MM-DD` in the machine's local timezone (business dates are local, not UTC).
 pub async fn today_local(db: &Db) -> Result<String, DataError> {
     Ok(sqlx::query_scalar("SELECT date('now','localtime')")

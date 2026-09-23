@@ -25,6 +25,8 @@ export type DocumentInitial = {
   date: string | null; // due date (invoice) / valid until (quote)
   notes: string;
   lines: EditLine[];
+  /** Set when the customer can't change (e.g. a draft billing a job); explains why. */
+  customerLockedReason?: string;
 };
 
 /**
@@ -131,10 +133,11 @@ export function DocumentForm({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid max-w-xl gap-4 sm:grid-cols-2">
-          <Field label="Customer" required>
+          <Field label="Customer" required hint={initial?.customerLockedReason}>
             {(p) => (
               <Select
                 {...p}
+                disabled={Boolean(initial?.customerLockedReason)}
                 value={customerId ?? ""}
                 onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
               >

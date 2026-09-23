@@ -4,7 +4,7 @@ use rmb_domain::inventory::MovementReason;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqliteConnection};
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -285,7 +285,7 @@ pub async fn adjust_stock(
     qty_delta: i64,
     note: &str,
 ) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let claimed: Option<i64> = sqlx::query_scalar(
         "UPDATE item SET qty_on_hand = qty_on_hand \
          WHERE id = ? AND deleted_at IS NULL AND kind = 'product' AND tracked = 1 RETURNING id",

@@ -7,7 +7,7 @@ use rmb_domain::tax::line_tax;
 use serde::Serialize;
 use sqlx::FromRow;
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 use crate::repos::invoices::{
     self, to_doc_line, validate_draft_metadata, validate_line_items, validated_totals, LineInput,
@@ -63,7 +63,7 @@ pub async fn create_draft(
     let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     validate_draft_metadata(&mut tx, customer_id, valid_until, "valid-until date", notes).await?;
     validate_line_items(&mut tx, lines).await?;
     let valid_until = valid_until.map(str::trim);
@@ -149,7 +149,7 @@ pub async fn update_draft(
     let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let claimed: Option<i64> = sqlx::query_scalar(
         "UPDATE quote SET status = status \
          WHERE id = ? AND deleted_at IS NULL AND status = 'draft' RETURNING id",
@@ -249,9 +249,15 @@ pub async fn set_status(db: &Db, id: i64, to: &str) -> Result<(), DataError> {
         .ok_or_else(|| DataError::Other("invalid current status".into()))?;
     let target = QuoteStatus::from_db(to)
         .ok_or_else(|| DataError::Other(format!("unknown status '{to}'")))?;
+    if target == QuoteStatus::Converted {
+        return Err(DataError::Other(
+            "a quote is marked converted automatically when you convert it to an invoice or job"
+                .into(),
+        ));
+    }
     if !from.can_transition_to(target) {
         return Err(DataError::Other(format!(
-            "cannot move a quote from {current} to {to}"
+            "a {current} quote can't be marked {to}"
         )));
     }
     let changed = sqlx::query(
@@ -306,7 +312,7 @@ pub async fn delete(db: &Db, id: i64) -> Result<(), DataError> {
 pub async fn convert_to_invoice(db: &Db, id: i64) -> Result<i64, DataError> {
     // Claim first. This is the transaction's first database operation, so competing invoice/job
     // conversions cannot both read "accepted" and bill the same quote.
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let source: Option<(i64, String)> = sqlx::query_as(
         "UPDATE quote SET status = 'converted' \
          WHERE id = ? AND deleted_at IS NULL AND status = 'accepted' \

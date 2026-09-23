@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 
 /// v1 formats and parses all money with two minor-unit decimal places. Restrict settings to
@@ -136,7 +136,7 @@ pub async fn set_logo_asset(
     path: Option<&str>,
     asset: Option<(&[u8], &str)>,
 ) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let asset_id = match asset {
         Some((data, format)) if !data.is_empty() && matches!(format, "png" | "jpg") => {
             let existing: Option<i64> = sqlx::query_scalar(
@@ -332,7 +332,7 @@ pub async fn apply_tax_preset(db: &Db, country: &str) -> Result<(), DataError> {
     let preset =
         tax_preset(&country).ok_or_else(|| DataError::Other("unknown tax preset".into()))?;
     let inclusive_default = get(db).await?.prices_tax_inclusive;
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     for (name, rate_bp) in preset {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM tax_rate WHERE archived = 0 AND lower(name) = lower(?))",
