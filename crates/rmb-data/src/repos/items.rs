@@ -204,15 +204,14 @@ pub async fn soft_delete(db: &Db, id: i64) -> Result<(), DataError> {
            AND NOT EXISTS (SELECT 1 FROM job_material m JOIN job j ON j.id = m.job_id \
                            WHERE m.item_id = ?1 AND m.invoiced = 0 AND j.deleted_at IS NULL) \
            AND NOT EXISTS (SELECT 1 FROM recurring_invoice_line l \
-                           JOIN recurring_invoice r ON r.id = l.recurring_id \
-                           WHERE l.item_id = ?1 AND r.active = 1)",
+                           WHERE l.item_id = ?1)",
     )
     .bind(id)
     .execute(db)
     .await?;
     if result.rows_affected() != 1 {
         return Err(DataError::Other(
-            "item not found, has stock on hand, or is used by draft or active work".into(),
+            "item not found, has stock on hand, or is used by a draft, an open quote, an unbilled job or a recurring schedule".into(),
         ));
     }
     Ok(())

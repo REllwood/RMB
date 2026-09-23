@@ -16,10 +16,22 @@ export type EditLine = {
 };
 
 export type LineIssue = {
+  item?: string;
   description?: string;
   quantity?: string;
   price?: string;
 };
+
+/** The messages for one line, in the order the fields appear. */
+export function lineIssueMessages(issue: LineIssue): string[] {
+  return [issue.item, issue.description, issue.quantity, issue.price].filter(
+    (message): message is string => Boolean(message),
+  );
+}
+
+export function hasLineIssues(issues: LineIssue[]): boolean {
+  return issues.some((issue) => lineIssueMessages(issue).length > 0);
+}
 
 export const taxKey = (t: TaxChoice) => `${t.name}|${t.bp}|${t.inclusive ? 1 : 0}`;
 
@@ -76,6 +88,10 @@ export function validateEditLines(lines: EditLine[], items: Item[] = []): LineIs
     const item =
       line.item_id === null ? undefined : items.find((candidate) => candidate.id === line.item_id);
     return {
+      item:
+        line.item_id !== null && item === undefined
+          ? "This catalogue item has been archived — choose another item or Custom"
+          : undefined,
       description: !line.description.trim()
         ? "Description is required"
         : line.description.trim().length > 2_000

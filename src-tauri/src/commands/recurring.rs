@@ -2,7 +2,9 @@
 
 use rmb_data::db::Db;
 use rmb_data::repos::invoices::LineInput;
-use rmb_data::repos::recurring::{self, RecurringDetail, RecurringInput, RecurringListRow};
+use rmb_data::repos::recurring::{
+    self, RecurringDetail, RecurringInput, RecurringListRow, ResumePreview, RunReport,
+};
 use tauri::State;
 
 use crate::error::AppError;
@@ -40,14 +42,25 @@ pub async fn update_recurring(
     Ok(())
 }
 
+/// Pause or resume a schedule; `skip_missed` continues from today instead of catching up.
 #[tauri::command]
 pub async fn set_recurring_active(
     db: State<'_, Db>,
     id: i64,
     active: bool,
+    skip_missed: bool,
 ) -> Result<(), AppError> {
-    recurring::set_active(&db, id, active).await?;
+    recurring::set_active(&db, id, active, skip_missed).await?;
     Ok(())
+}
+
+/// What resuming a paused schedule would generate.
+#[tauri::command]
+pub async fn recurring_resume_preview(
+    db: State<'_, Db>,
+    id: i64,
+) -> Result<ResumePreview, AppError> {
+    Ok(recurring::resume_preview(&db, id).await?)
 }
 
 #[tauri::command]
@@ -56,8 +69,8 @@ pub async fn delete_recurring(db: State<'_, Db>, id: i64) -> Result<(), AppError
     Ok(())
 }
 
-/// Generate everything due as of today; returns how many drafts were created.
+/// Generate everything due as of today: the drafts created and any schedules that couldn't run.
 #[tauri::command]
-pub async fn run_recurring_now(db: State<'_, Db>) -> Result<i64, AppError> {
-    Ok(recurring::run_due_now(&db).await?.len() as i64)
+pub async fn run_recurring_now(db: State<'_, Db>) -> Result<RunReport, AppError> {
+    Ok(recurring::run_due_now(&db).await?)
 }

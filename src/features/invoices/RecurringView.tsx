@@ -1,14 +1,14 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
-import type { RecurringInput } from "@/lib/types";
+import type { RecurringInput, RecurringListRow, ResumePreview } from "@/lib/types";
 import { useMoneyFormat } from "@/lib/money";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ConfirmDialog } from "@/components/ui/dialog";
+import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -27,6 +27,7 @@ import { LineEditor } from "@/features/shared/LineEditor";
 import {
   emptyLine,
   fromRows,
+  hasLineIssues,
   toLineInputs,
   validateEditLines,
   type EditLine,
@@ -71,14 +72,10 @@ function ScheduleList({
 }) {
   const money = useMoneyFormat();
   const toast = useToast();
-  const namesQ = useIpcQuery(["customers", ""], () => ipc.listCustomers());
-  const names = useMemo(
-    () => new Map((namesQ.data ?? []).map((c) => [c.id, c.name])),
-    [namesQ.data],
-  );
   const q = useIpcQuery(["recurring"], () => ipc.listRecurring());
   const toggle = useIpcMutation(
-    (v: { id: number; active: boolean }) => ipc.setRecurringActive(v.id, v.active),
+    (v: { id: number; active: boolean; skipMissed: boolean }) =>
+      ipc.setRecurringActive(v.id, v.active, v.skipMissed),
     [["recurring"]],
   );
   const del = useIpcMutation((id: number) => ipc.deleteRecurring(id), [["recurring"]], {
@@ -89,27 +86,57 @@ function ScheduleList({
     [["recurring"], ["invoices"], ["dashboard"]],
   );
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [resuming, setResuming] = useState<{
+    row: RecurringListRow;
+    preview: ResumePreview;
+  } | null>(null);
+  const [checking, setChecking] = useState<number | null>(null);
 
   async function onRunNow() {
     try {
-      const count = await runNow.mutateAsync(undefined);
+      const report = await runNow.mutateAsync(undefined);
+      const count = report.created.length;
       toast(
         "success",
         count > 0
           ? `Created ${count} draft invoice${count === 1 ? "" : "s"}`
           : "Nothing due — all schedules are up to date",
       );
+      for (const problem of report.problems) toast("error", problem);
     } catch {
       // useIpcMutation has already shown the backend error.
     }
   }
 
-  if (q.isLoading || namesQ.isLoading) return <Loading />;
-  const loadError = q.error ?? namesQ.error;
-  if (loadError)
-    return (
-      <ErrorState error={loadError} onRetry={() => Promise.all([q.refetch(), namesQ.refetch()])} />
-    );
+  async function resume(row: RecurringListRow, skipMissed: boolean) {
+    try {
+      await toggle.mutateAsync({ id: row.id, active: true, skipMissed });
+      setResuming(null);
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
+  }
+
+  async function onToggle(row: RecurringListRow) {
+    if (row.active) {
+      toggle.mutate({ id: row.id, active: false, skipMissed: false });
+      return;
+    }
+    // Resuming after a pause could back-fill every missed period — ask first.
+    setChecking(row.id);
+    try {
+      const preview = await ipc.recurringResumePreview(row.id);
+      if (preview.missed > 0) setResuming({ row, preview });
+      else await resume(row, false);
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      setChecking(null);
+    }
+  }
+
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
 
   return (
     <Card>
@@ -153,6 +180,7 @@ function ScheduleList({
                 <TableHead>Customer</TableHead>
                 <TableHead>Frequency</TableHead>
                 <TableHead>Next</TableHead>
+                <TableHead>Ends</TableHead>
                 <TableHead className="text-right">Amount</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>
@@ -161,47 +189,107 @@ function ScheduleList({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {q.data.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell className="font-medium">{names.get(r.customer_id) ?? "—"}</TableCell>
-                  <TableCell className="capitalize">{r.frequency}</TableCell>
-                  <TableCell className="text-muted-foreground">{r.next_date}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(r.total_minor)}</TableCell>
-                  <TableCell>
-                    <Badge variant={r.active ? "success" : "outline"}>
-                      {r.active ? "active" : "paused"}
-                    </Badge>
-                    {r.problem && (
-                      <p className="mt-1 max-w-56 text-xs text-destructive">
-                        Needs attention: {r.problem}. Edit the schedule to fix it.
-                      </p>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right whitespace-nowrap">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => toggle.mutate({ id: r.id, active: !r.active })}
-                      loading={toggle.isPending && toggle.variables?.id === r.id}
-                      loadingLabel={r.active ? "Pausing…" : "Resuming…"}
-                      aria-label={r.active ? "Pause schedule" : "Resume schedule"}
-                    >
-                      {r.active ? <Pause className="size-4" /> : <Play className="size-4" />}
-                      {r.active ? "Pause" : "Resume"}
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => onEdit(r.id)}>
-                      <Pencil className="size-4" /> Edit
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setDeleting(r.id)}>
-                      <Trash2 className="size-4" /> Delete
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {q.data.map((r) => {
+                const who = r.customer_name || "Deleted customer";
+                return (
+                  <TableRow key={r.id}>
+                    <TableCell className="font-medium">{who}</TableCell>
+                    <TableCell className="capitalize">{r.frequency}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {r.ended ? "—" : r.next_date}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{r.end_date ?? "Never"}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {money(r.total_minor)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={r.ended ? "outline" : r.active ? "success" : "outline"}>
+                        {r.ended ? "ended" : r.active ? "active" : "paused"}
+                      </Badge>
+                      {r.problem && (
+                        <p className="mt-1 max-w-56 text-xs text-destructive">
+                          Needs attention: {r.problem}. Edit the schedule to fix it.
+                        </p>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right whitespace-nowrap">
+                      {!r.ended && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onToggle(r)}
+                          loading={
+                            checking === r.id || (toggle.isPending && toggle.variables?.id === r.id)
+                          }
+                          loadingLabel={r.active ? "Pausing…" : "Resuming…"}
+                          aria-label={`${r.active ? "Pause" : "Resume"} the ${r.frequency} schedule for ${who}`}
+                        >
+                          {r.active ? <Pause className="size-4" /> : <Play className="size-4" />}
+                          {r.active ? "Pause" : "Resume"}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onEdit(r.id)}
+                        aria-label={`Edit the ${r.frequency} schedule for ${who}`}
+                      >
+                        <Pencil className="size-4" /> Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDeleting(r.id)}
+                        aria-label={`Delete the ${r.frequency} schedule for ${who}`}
+                      >
+                        <Trash2 className="size-4" /> Delete
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}
       </CardContent>
+
+      <Dialog
+        open={resuming !== null}
+        onClose={() => !toggle.isPending && setResuming(null)}
+        title="Resume this schedule?"
+        description={
+          resuming
+            ? `While it was paused, ${resuming.preview.missed} invoice${resuming.preview.missed === 1 ? " was" : "s were"} missed (from ${resuming.row.next_date}). Create a draft for each, or skip them and continue from ${resuming.preview.skip_to}?`
+            : undefined
+        }
+        footer={
+          resuming && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => setResuming(null)}
+                disabled={toggle.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => resume(resuming.row, false)}
+                disabled={toggle.isPending}
+              >
+                Create {resuming.preview.missed} draft{resuming.preview.missed === 1 ? "" : "s"}
+              </Button>
+              <Button
+                onClick={() => resume(resuming.row, true)}
+                loading={toggle.isPending}
+                loadingLabel="Resuming…"
+              >
+                Skip to {resuming.preview.skip_to}
+              </Button>
+            </>
+          )
+        }
+      />
 
       <ConfirmDialog
         open={deleting !== null}
@@ -249,7 +337,8 @@ function ScheduleForm({
   const [frequency, setFrequency] = useState(s?.frequency ?? "monthly");
   const [nextDate, setNextDate] = useState(s?.next_date ?? todayLocalISO());
   const [endDate, setEndDate] = useState(s?.end_date ?? "");
-  const [dueDays, setDueDays] = useState(s?.due_days != null ? String(s.due_days) : "14");
+  // New schedules default to 14-day terms; an existing schedule keeps "no due date" as blank.
+  const [dueDays, setDueDays] = useState(s ? (s.due_days == null ? "" : String(s.due_days)) : "14");
   const [notes, setNotes] = useState(s?.notes ?? "");
   const [edited, setEdited] = useState<EditLine[] | null>(initial ? fromRows(initial.lines) : null);
 
@@ -280,17 +369,22 @@ function ScheduleForm({
   const items = itemsQ.data ?? [];
   const lines = edited ?? [emptyLine(taxes)];
   const lineIssues = validateEditLines(lines, items);
-  const hasLineIssues = lineIssues.some(
-    (issue) => issue.description || issue.quantity || issue.price,
-  );
+  const lineProblems = hasLineIssues(lineIssues);
   const payload = toLineInputs(lines);
   const parsedDueDays = dueDays.trim() === "" ? null : Number(dueDays);
   const dueDaysValid =
     parsedDueDays === null ||
     (Number.isInteger(parsedDueDays) && parsedDueDays >= 0 && parsedDueDays <= 3_650);
   const datesValid = Boolean(nextDate) && (!endDate || endDate >= nextDate);
+  const customerMissing =
+    customerId !== null && !(customersQ.data ?? []).some((c) => c.id === customerId);
   const valid =
-    customerId !== null && payload.length > 0 && datesValid && dueDaysValid && !hasLineIssues;
+    customerId !== null &&
+    !customerMissing &&
+    payload.length > 0 &&
+    datesValid &&
+    dueDaysValid &&
+    !lineProblems;
 
   async function onSave() {
     if (!valid || customerId === null) return;
@@ -321,7 +415,15 @@ function ScheduleForm({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid max-w-3xl gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Field label="Customer" required>
+          <Field
+            label="Customer"
+            required
+            error={
+              customerMissing
+                ? "This customer has been deleted — choose another customer"
+                : undefined
+            }
+          >
             {(p) => (
               <Select
                 {...p}
@@ -331,6 +433,11 @@ function ScheduleForm({
                 <option value="" disabled>
                   Choose a customer…
                 </option>
+                {customerMissing && customerId !== null && (
+                  <option value={customerId} disabled>
+                    Deleted customer
+                  </option>
+                )}
                 {customersQ.data?.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -353,7 +460,7 @@ function ScheduleForm({
           <Field
             label="Next invoice date"
             required
-            hint="Month-end schedules stay anchored to month end"
+            hint="Up to a year in the past: a draft is created for each missed period. Month-end dates stay at month end."
           >
             {(p) => (
               <Input

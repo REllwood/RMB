@@ -396,10 +396,13 @@ pub async fn update_draft(
     let due_date = due_date.map(str::trim);
 
     sqlx::query(
-        "UPDATE invoice SET customer_id = ?, due_date = ?, notes = ?, subtotal_minor = ?, \
-         tax_minor = ?, total_minor = ?, tax_summary = ? WHERE id = ?",
+        "UPDATE invoice SET customer_id = ?, \
+         due_days = CASE WHEN due_date IS ? THEN due_days ELSE NULL END, due_date = ?, \
+         notes = ?, subtotal_minor = ?, tax_minor = ?, total_minor = ?, tax_summary = ? \
+         WHERE id = ?",
     )
     .bind(customer_id)
+    .bind(due_date)
     .bind(due_date)
     .bind(notes)
     .bind(totals.subtotal.minor())
@@ -600,7 +603,11 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     sqlx::query(
         "UPDATE invoice SET status = ?, number = ?, issue_date = date('now','localtime'), \
          issued_at = datetime('now'), business_snapshot = ?, customer_snapshot = ?, \
-         business_logo_asset_id = ? WHERE id = ?",
+         business_logo_asset_id = ?, \
+         due_date = CASE WHEN due_days IS NULL THEN due_date \
+                         ELSE max(COALESCE(due_date, ''), \
+                                  date('now', 'localtime', printf('+%d days', due_days))) END \
+         WHERE id = ?",
     )
     .bind(new_status)
     .bind(&number)

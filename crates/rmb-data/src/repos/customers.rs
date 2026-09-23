@@ -110,7 +110,28 @@ pub async fn update(db: &Db, id: i64, input: &CustomerInput) -> Result<(), DataE
     Ok(())
 }
 
+/// Soft-delete a customer. Refused while they have anything still in progress or money still owed:
+/// drafts, open quotes, jobs not yet invoiced, recurring schedules (active or paused), or issued
+/// invoices with a balance. One statement, so nothing can be added in between the check and the
+/// delete.
 pub async fn soft_delete(db: &Db, id: i64) -> Result<(), DataError> {
+    let result = sqlx::query(
+        "UPDATE customer SET deleted_at = datetime('now') \
+         WHERE id = ?1 AND deleted_at IS NULL \
+           AND NOT EXISTS (SELECT 1 FROM invoice WHERE customer_id = ?1 \
+                           AND status IN ('draft', 'issued', 'part_paid')) \
+           AND NOT EXISTS (SELECT 1 FROM quote WHERE customer_id = ?1 AND deleted_at IS NULL \
+                           AND status NOT IN ('declined', 'expired', 'converted')) \
+           AND NOT EXISTS (SELECT 1 FROM job WHERE customer_id = ?1 AND deleted_at IS NULL \
+                           AND status != 'invoiced') \
+           AND NOT EXISTS (SELECT 1 FROM recurring_invoice WHERE customer_id = ?1)",
+    )
+    .bind(id)
+    .execute(db)
+    .await?;
+    if result.rows_affected() == 1 {
+        return Ok(());
+    }
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM customer WHERE id = ? AND deleted_at IS NULL)",
     )
@@ -120,35 +141,50 @@ pub async fn soft_delete(db: &Db, id: i64) -> Result<(), DataError> {
     if !exists {
         return Err(DataError::Other("customer not found".into()));
     }
+    let blockers = deletion_blockers(db, id).await?;
+    Err(DataError::Other(format!(
+        "this customer can't be deleted while they have {}",
+        blockers.join(", ")
+    )))
+}
 
-    let active_work: i64 = sqlx::query_scalar(
+/// Plain-language list of what stops a customer from being deleted.
+async fn deletion_blockers(db: &Db, id: i64) -> Result<Vec<String>, DataError> {
+    let (drafts, unpaid, quotes, jobs, schedules): (i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT \
-           (SELECT COUNT(*) FROM invoice WHERE customer_id = ?1 AND status = 'draft') + \
+           (SELECT COUNT(*) FROM invoice WHERE customer_id = ?1 AND status = 'draft'), \
+           (SELECT COUNT(*) FROM invoice WHERE customer_id = ?1 AND status IN ('issued', 'part_paid')), \
            (SELECT COUNT(*) FROM quote WHERE customer_id = ?1 AND deleted_at IS NULL \
-              AND status NOT IN ('declined', 'expired', 'converted')) + \
+              AND status NOT IN ('declined', 'expired', 'converted')), \
            (SELECT COUNT(*) FROM job WHERE customer_id = ?1 AND deleted_at IS NULL \
-              AND status != 'invoiced') + \
-           (SELECT COUNT(*) FROM recurring_invoice WHERE customer_id = ?1 AND active = 1)",
+              AND status != 'invoiced'), \
+           (SELECT COUNT(*) FROM recurring_invoice WHERE customer_id = ?1)",
     )
     .bind(id)
     .fetch_one(db)
     .await?;
-    if active_work > 0 {
-        return Err(DataError::Other(
-            "customer cannot be deleted while they have draft or active work".into(),
-        ));
+    let mut blockers = Vec::new();
+    for (count, one, many) in [
+        (drafts, "a draft invoice", "draft invoices"),
+        (unpaid, "an unpaid invoice", "unpaid invoices"),
+        (quotes, "an open quote", "open quotes"),
+        (
+            jobs,
+            "a job that isn't invoiced",
+            "jobs that aren't invoiced",
+        ),
+        (schedules, "a recurring schedule", "recurring schedules"),
+    ] {
+        match count {
+            0 => {}
+            1 => blockers.push(one.to_owned()),
+            n => blockers.push(format!("{n} {many}")),
+        }
     }
-
-    let result = sqlx::query(
-        "UPDATE customer SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .execute(db)
-    .await?;
-    if result.rows_affected() != 1 {
-        return Err(DataError::Other("customer not found".into()));
+    if blockers.is_empty() {
+        blockers.push("work in progress".into());
     }
-    Ok(())
+    Ok(blockers)
 }
 
 #[cfg(test)]

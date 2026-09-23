@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/table";
 import {
   emptyLine,
+  hasLineIssues,
+  lineIssueMessages,
   NO_TAX,
   normaliseQuantity,
   taxKey,
@@ -111,10 +113,17 @@ export function LineEditor({
                   </label>
                   <Select
                     id={`${idPrefix}-item-${i}`}
+                    aria-invalid={Boolean(issue.item)}
+                    aria-describedby={issue.item ? errorSummaryId : undefined}
                     value={l.item_id ?? ""}
                     onChange={(e) => pickItem(i, e.target.value)}
                   >
                     <option value="">Custom</option>
+                    {l.item_id !== null && !items.some((it) => it.id === l.item_id) && (
+                      <option value={l.item_id} disabled>
+                        Archived item
+                      </option>
+                    )}
                     {products.length > 0 && (
                       <optgroup label="Products">{products.map(itemOption)}</optgroup>
                     )}
@@ -199,7 +208,7 @@ export function LineEditor({
           })}
         </TableBody>
       </Table>
-      {issues.some((issue) => issue.description || issue.quantity || issue.price) && (
+      {hasLineIssues(issues) && (
         <div
           id={`${idPrefix}-line-errors`}
           role="alert"
@@ -207,9 +216,7 @@ export function LineEditor({
         >
           {issues
             .flatMap((issue, index) =>
-              [issue.description, issue.quantity, issue.price]
-                .filter((message): message is string => Boolean(message))
-                .map((message) => `Line ${index + 1}: ${message}`),
+              lineIssueMessages(issue).map((message) => `Line ${index + 1}: ${message}`),
             )
             .join(" · ")}
         </div>
