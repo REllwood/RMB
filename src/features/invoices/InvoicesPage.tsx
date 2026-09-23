@@ -352,6 +352,9 @@ function InvoiceDetailView({
   const { invoice, lines, amount_paid_minor } = q.data;
   const balance = invoice.total_minor - amount_paid_minor;
   const payable = invoice.status === "issued" || invoice.status === "part_paid";
+  // Any issued invoice without recorded payments can be voided — including a zero-total one,
+  // which is marked paid as soon as it is issued.
+  const voidable = (payable || invoice.status === "paid") && amount_paid_minor === 0;
 
   async function onExportPdf() {
     setExportingDocument(true);
@@ -487,15 +490,11 @@ function InvoiceDetailView({
                 </Button>
               </>
             )}
-            {payable && (
-              <>
-                <Button onClick={() => setPaying(true)}>Record payment</Button>
-                {amount_paid_minor === 0 && (
-                  <Button variant="outline" onClick={() => setConfirm({ kind: "void" })}>
-                    Void
-                  </Button>
-                )}
-              </>
+            {payable && <Button onClick={() => setPaying(true)}>Record payment</Button>}
+            {voidable && (
+              <Button variant="outline" onClick={() => setConfirm({ kind: "void" })}>
+                Void
+              </Button>
             )}
           </div>
         </CardContent>
