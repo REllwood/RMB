@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 use crate::repos::invoices::{self, to_doc_line, validate_line_items, validated_totals, LineInput};
 
@@ -226,7 +226,7 @@ pub async fn create(
 ) -> Result<i64, DataError> {
     validate(input, lines)?;
     let anchor_day = i64::from(date_parts(&input.next_date).expect("validated date").2);
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     ensure_active_customer(&mut tx, input.customer_id).await?;
     validate_line_items(&mut tx, lines).await?;
     let id = sqlx::query(
@@ -256,7 +256,7 @@ pub async fn update(
 ) -> Result<(), DataError> {
     validate(input, lines)?;
     let anchor_day = i64::from(date_parts(&input.next_date).expect("validated date").2);
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     ensure_active_customer(&mut tx, input.customer_id).await?;
     validate_line_items(&mut tx, lines).await?;
     let updated = sqlx::query(
@@ -301,7 +301,7 @@ pub async fn set_active(db: &Db, id: i64, active: bool) -> Result<(), DataError>
 
 /// Schedules are templates, not documents — hard delete is fine (generated invoices keep living).
 pub async fn delete(db: &Db, id: i64) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     sqlx::query("DELETE FROM recurring_invoice_line WHERE recurring_id = ?")
         .bind(id)
         .execute(&mut *tx)
@@ -447,7 +447,7 @@ pub async fn run_due(db: &Db, today: &str) -> Result<Vec<i64>, DataError> {
                 next_occurrence(&mut conn, &s.next_date, &s.frequency, s.anchor_day).await?
             };
 
-            let mut tx = db.begin().await?;
+            let mut tx = begin_write(db).await?;
             let claimed = sqlx::query(
                 "UPDATE recurring_invoice SET next_date = ? \
                  WHERE id = ? AND active = 1 AND next_date = ?",

@@ -98,6 +98,10 @@ export interface InvoiceRow {
   total_minor: number;
   notes: string;
   created_at: string;
+  source_quote_id: number | null;
+  source_job_id: number | null;
+  /** Name frozen on the issued invoice (current name for drafts); kept for deleted customers. */
+  customer_name: string;
 }
 
 export interface InvoiceLineRow {

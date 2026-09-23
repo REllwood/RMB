@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { FileDown, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 
@@ -90,14 +90,8 @@ export function InvoicesPage() {
   );
 }
 
-function useCustomerNames(): Map<number, string> {
-  const q = useIpcQuery(["customers", ""], () => ipc.listCustomers());
-  return useMemo(() => new Map((q.data ?? []).map((c) => [c.id, c.name])), [q.data]);
-}
-
 function InvoiceList({ onOpen }: { onOpen: (id: number) => void }) {
   const money = useMoneyFormat();
-  const names = useCustomerNames();
   const q = useIpcQuery(["invoices"], () => ipc.listInvoices());
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -125,7 +119,7 @@ function InvoiceList({ onOpen }: { onOpen: (id: number) => void }) {
           {q.data.map((inv) => (
             <TableRow key={inv.id} className="cursor-pointer" onClick={() => onOpen(inv.id)}>
               <TableCell className="pl-4 font-medium">{inv.number ?? `Draft #${inv.id}`}</TableCell>
-              <TableCell>{names.get(inv.customer_id) ?? "—"}</TableCell>
+              <TableCell>{inv.customer_name || "—"}</TableCell>
               <TableCell className="text-muted-foreground">
                 {inv.issue_date ?? inv.created_at.slice(0, 10)}
               </TableCell>
@@ -176,6 +170,12 @@ function InvoiceEdit({ id, onDone }: { id: number; onDone: () => void }) {
         date: d.invoice.due_date,
         notes: d.invoice.notes,
         lines: fromRows(d.lines),
+        customerLockedReason:
+          d.invoice.source_job_id !== null
+            ? "This draft bills a job, so it stays with that job's customer."
+            : d.invoice.source_quote_id !== null
+              ? "This draft came from a quote, so it stays with that quote's customer."
+              : undefined,
       }}
       onSaved={onDone}
       onCancel={onDone}
@@ -279,7 +279,6 @@ function InvoiceDetailView({
 }) {
   const toast = useToast();
   const money = useMoneyFormat();
-  const names = useCustomerNames();
   const q = useIpcQuery(["invoice", id], () => ipc.getInvoice(id));
   const isDraft = q.data?.invoice.status === "draft";
   const paymentsQ = useIpcQuery(
@@ -374,7 +373,7 @@ function InvoiceDetailView({
           <div className="space-y-1">
             <CardTitle>{invoice.number ?? `Draft #${invoice.id}`}</CardTitle>
             <p className="text-sm text-muted-foreground">
-              {names.get(invoice.customer_id) ?? "—"}
+              {invoice.customer_name || "—"}
               {invoice.issue_date && ` · issued ${invoice.issue_date}`}
               {invoice.due_date && ` · due ${invoice.due_date}`}
             </p>
@@ -562,7 +561,7 @@ function InvoiceDetailView({
           }
         }}
         title="Void this invoice?"
-        description="Stock is restored and the number is kept on record. This can't be undone."
+        description={`Stock is restored and the number is kept on record.${sourceNote(invoice, "void")} This can't be undone.`}
         confirmLabel="Void invoice"
         destructive
         pending={voidMut.isPending}
@@ -579,7 +578,7 @@ function InvoiceDetailView({
           }
         }}
         title="Delete this draft?"
-        description="Drafts have no number and no stock effect — deleting is permanent."
+        description={`Drafts have no number and no stock effect — deleting is permanent.${sourceNote(invoice, "delete")}`}
         confirmLabel="Delete draft"
         destructive
         pending={deleteDraft.isPending}
@@ -604,6 +603,15 @@ function InvoiceDetailView({
       />
     </div>
   );
+}
+
+/** What happens to the quote or job an invoice came from when it is voided or deleted. */
+function sourceNote(invoice: InvoiceRow, action: "void" | "delete"): string {
+  if (invoice.source_job_id !== null)
+    return ` The job's time and materials become billable again${action === "void" ? " so you can reissue" : ""}.`;
+  if (invoice.source_quote_id !== null)
+    return " The quote it came from returns to accepted, so you can convert it again.";
+  return "";
 }
 
 function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {

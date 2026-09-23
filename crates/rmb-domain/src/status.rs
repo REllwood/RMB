@@ -1,8 +1,8 @@
 //! Document status state machines + payment-derived status and balance.
 //!
-//! Legal transitions are enforced here (the data layer calls `can_transition_to` before
-//! persisting a status change). Issued invoices are immutable: the only ways out are payment
-//! (Issued → PartPaid → Paid) or Void.
+//! Legal transitions are defined here and checked by the data layer before it persists a status
+//! change. Issued invoices are immutable: their status only moves with payments (recorded or
+//! removed) or to Void.
 
 use serde::{Deserialize, Serialize};
 
@@ -118,16 +118,23 @@ pub enum InvoiceStatus {
 }
 
 impl InvoiceStatus {
+    /// Draft → Issued on issue (Paid when the total is zero). Payment-derived statuses move both
+    /// ways as payments are recorded or removed. Void needs no payments against the invoice, so it
+    /// is reachable from Issued, or from Paid for a zero total.
     pub fn can_transition_to(self, to: InvoiceStatus) -> bool {
         use InvoiceStatus::*;
         matches!(
             (self, to),
             (Draft, Issued)
+                | (Draft, Paid)
                 | (Issued, PartPaid)
                 | (Issued, Paid)
                 | (Issued, Void)
+                | (PartPaid, Issued)
                 | (PartPaid, Paid)
-                | (PartPaid, Void)
+                | (Paid, Issued)
+                | (Paid, PartPaid)
+                | (Paid, Void)
         )
     }
 
@@ -194,9 +201,12 @@ mod tests {
     #[test]
     fn invoice_legal_transitions() {
         assert!(InvoiceStatus::Draft.can_transition_to(InvoiceStatus::Issued));
+        assert!(InvoiceStatus::Draft.can_transition_to(InvoiceStatus::Paid)); // zero total
         assert!(InvoiceStatus::Issued.can_transition_to(InvoiceStatus::Void));
-        assert!(!InvoiceStatus::Paid.can_transition_to(InvoiceStatus::Issued));
+        assert!(InvoiceStatus::Paid.can_transition_to(InvoiceStatus::Issued)); // payment removed
+        assert!(!InvoiceStatus::PartPaid.can_transition_to(InvoiceStatus::Void)); // has payments
         assert!(!InvoiceStatus::Issued.can_transition_to(InvoiceStatus::Draft));
+        assert!(!InvoiceStatus::Void.can_transition_to(InvoiceStatus::Issued));
         assert!(InvoiceStatus::Draft.is_editable());
         assert!(!InvoiceStatus::Issued.is_editable());
     }

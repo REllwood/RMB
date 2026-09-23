@@ -48,9 +48,9 @@ describe("document line validation", () => {
   });
 
   it("accepts negative prices as discount lines", () => {
-    expect(validateEditLines([line({ description: "Loyalty discount", price: "-10.00" })])).toEqual([
-      { description: undefined, quantity: undefined, price: undefined },
-    ]);
+    expect(validateEditLines([line({ description: "Loyalty discount", price: "-10.00" })])).toEqual(
+      [{ description: undefined, quantity: undefined, price: undefined }],
+    );
   });
 
   it("trims validated payload text and preserves exact minor units", () => {

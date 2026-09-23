@@ -1,12 +1,12 @@
 //! Payments + allocations. Recording a payment allocates against the outstanding balance, then derives
 //! and stores the invoice's payment status (issued → part_paid → paid).
 
-use rmb_domain::status::payment_status;
+use rmb_domain::status::{payment_status, InvoiceStatus};
 use rmb_domain::Money;
 use serde::Serialize;
 use sqlx::FromRow;
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -16,6 +16,19 @@ pub struct Payment {
     pub amount_minor: i64,
     pub method: String,
     pub reference: String,
+}
+
+/// Check a payment-driven status change against the domain's transition rules.
+fn check_transition(current: &str, next: InvoiceStatus) -> Result<(), DataError> {
+    let from = InvoiceStatus::from_db(current)
+        .ok_or_else(|| DataError::Other(format!("invoice has an unknown status '{current}'")))?;
+    if from != next && !from.can_transition_to(next) {
+        return Err(DataError::Other(format!(
+            "a {current} invoice can't become {}",
+            next.as_db()
+        )));
+    }
+    Ok(())
 }
 
 /// Record a payment against an invoice. Overpayments are rejected because v1 has no customer-credit
@@ -41,7 +54,7 @@ pub async fn record_payment(
             "payment method or reference is too long".into(),
         ));
     }
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
 
     // A harmless update is deliberately the first operation: it takes SQLite's write lock before
     // the outstanding balance is read, serialising simultaneous payment attempts for this file.
@@ -113,6 +126,7 @@ pub async fn record_payment(
         ));
     }
     let new_status = payment_status(Money::from_minor(total), Money::from_minor(total_allocated));
+    check_transition(&status, new_status)?;
     sqlx::query("UPDATE invoice SET status = ? WHERE id = ? AND status != 'void'")
         .bind(new_status.as_db())
         .bind(invoice_id)
@@ -127,7 +141,7 @@ pub async fn record_payment(
 /// status from the remaining allocations. This is the v1 correction path for "paid the wrong
 /// invoice" — proper credit notes/refunds are a later module.
 pub async fn delete_payment(db: &Db, payment_id: i64) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
 
     let invoice_ids: Vec<i64> = sqlx::query_scalar(
         "SELECT DISTINCT invoice_id FROM payment_allocation WHERE payment_id = ?",
@@ -165,6 +179,7 @@ pub async fn delete_payment(db: &Db, payment_id: i64) -> Result<(), DataError> {
         // Only payment-derived statuses move; draft/void are explicit states left untouched.
         if matches!(status.as_str(), "issued" | "part_paid" | "paid") {
             let new_status = payment_status(Money::from_minor(total), Money::from_minor(paid));
+            check_transition(&status, new_status)?;
             sqlx::query("UPDATE invoice SET status = ? WHERE id = ?")
                 .bind(new_status.as_db())
                 .bind(invoice_id)
@@ -179,7 +194,7 @@ pub async fn delete_payment(db: &Db, payment_id: i64) -> Result<(), DataError> {
 
 pub async fn list_for_invoice(db: &Db, invoice_id: i64) -> Result<Vec<Payment>, DataError> {
     Ok(sqlx::query_as::<_, Payment>(
-        "SELECT p.id, p.date, p.amount_minor, p.method, p.reference \
+        "SELECT p.id, p.date, a.amount_minor, p.method, p.reference \
          FROM payment p JOIN payment_allocation a ON a.payment_id = p.id \
          WHERE a.invoice_id = ? ORDER BY p.id DESC",
     )

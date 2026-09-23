@@ -19,7 +19,7 @@ use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-use crate::db::Db;
+use crate::db::{begin_write, Db};
 use crate::error::DataError;
 use crate::repos::items;
 use crate::validation::valid_business_date;
@@ -48,6 +48,27 @@ pub struct InvoiceRow {
     pub total_minor: i64,
     pub notes: String,
     pub created_at: String,
+    /// The accepted quote this invoice was converted from, if any.
+    pub source_quote_id: Option<i64>,
+    /// The job this invoice bills, if any.
+    pub source_job_id: Option<i64>,
+    /// The customer's name as frozen on the issued invoice, or the current name for drafts. Deleted
+    /// customers keep their name here so historical documents never lose who they were for.
+    pub customer_name: String,
+}
+
+/// `SELECT` for [`InvoiceRow`] (as a macro so queries stay static strings for sqlx). Callers append
+/// `WHERE`/`ORDER BY` against the aliases `i` (invoice) and `c` (customer).
+macro_rules! invoice_row_select {
+    () => {
+        "SELECT i.id, i.customer_id, i.number, i.status, i.issue_date, i.due_date, \
+         i.subtotal_minor, i.tax_minor, i.total_minor, i.notes, i.created_at, i.source_quote_id, \
+         i.source_job_id, \
+         COALESCE(CASE WHEN json_valid(i.customer_snapshot) \
+                       THEN json_extract(i.customer_snapshot, '$.name') END, c.name, '') \
+           AS customer_name \
+         FROM invoice i LEFT JOIN customer c ON c.id = i.customer_id"
+    };
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -328,7 +349,7 @@ pub async fn create_draft(
     due_date: Option<&str>,
     notes: &str,
 ) -> Result<i64, DataError> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
     let invoice_id = create_draft_on(&mut tx, customer_id, lines, due_date, notes).await?;
     tx.commit().await?;
     Ok(invoice_id)
@@ -352,16 +373,22 @@ pub async fn update_draft(
     let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
-    let mut tx = db.begin().await?;
-    let claimed: Option<i64> = sqlx::query_scalar(
-        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' RETURNING id",
+    let mut tx = begin_write(db).await?;
+    let claimed: Option<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' \
+         RETURNING customer_id, source_quote_id, source_job_id",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    if claimed.is_none() {
+    let Some((current_customer, source_quote_id, source_job_id)) = claimed else {
         return Err(DataError::Other(
             "only draft invoices can be edited (void + reissue to correct an issued one)".into(),
+        ));
+    };
+    if customer_id != current_customer && (source_quote_id.is_some() || source_job_id.is_some()) {
+        return Err(DataError::Other(
+            "this draft was created from a quote or job, so it stays with that customer".into(),
         ));
     }
     validate_draft_metadata(&mut tx, customer_id, due_date, "due date", notes).await?;
@@ -391,21 +418,60 @@ pub async fn update_draft(
     Ok(())
 }
 
+/// Make the quote or job an invoice came from billable again, inside the caller's transaction.
+/// Used when that invoice is deleted as a draft or voided: the job's time and materials return to
+/// unbilled and the job to "done", and the quote returns to "accepted" so it can be converted again.
+async fn release_sources(
+    conn: &mut sqlx::SqliteConnection,
+    invoice_id: i64,
+    source_quote_id: Option<i64>,
+    source_job_id: Option<i64>,
+) -> Result<(), DataError> {
+    if let Some(job_id) = source_job_id {
+        sqlx::query("UPDATE time_entry SET invoiced = 0 WHERE job_id = ? AND invoiced = 1")
+            .bind(job_id)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("UPDATE job_material SET invoiced = 0 WHERE job_id = ? AND invoiced = 1")
+            .bind(job_id)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("UPDATE job SET status = 'done' WHERE id = ? AND status = 'invoiced'")
+            .bind(job_id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    if let Some(quote_id) = source_quote_id {
+        sqlx::query(
+            "UPDATE quote SET status = 'accepted', converted_invoice_id = NULL \
+             WHERE id = ? AND status = 'converted' AND converted_invoice_id = ?",
+        )
+        .bind(quote_id)
+        .bind(invoice_id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Hard-delete a **draft** invoice (and its lines). Drafts have no number, no stock effect, and
-/// no payments, so deletion is safe; issued invoices are voided, never deleted.
+/// no payments, so deletion is safe; issued invoices are voided, never deleted. A draft created
+/// from a quote or job hands that work back so it can be billed again.
 pub async fn delete_draft(db: &Db, id: i64) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
-    let claimed: Option<i64> = sqlx::query_scalar(
-        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' RETURNING id",
+    let mut tx = begin_write(db).await?;
+    let claimed: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' \
+         RETURNING source_quote_id, source_job_id",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    if claimed.is_none() {
+    let Some((source_quote_id, source_job_id)) = claimed else {
         return Err(DataError::Other(
             "only draft invoices can be deleted (issued invoices are voided instead)".into(),
         ));
-    }
+    };
+    release_sources(&mut tx, id, source_quote_id, source_job_id).await?;
     sqlx::query("DELETE FROM invoice_line WHERE invoice_id = ?")
         .bind(id)
         .execute(&mut *tx)
@@ -420,7 +486,7 @@ pub async fn delete_draft(db: &Db, id: i64) -> Result<(), DataError> {
 
 /// Issue a draft: assign number, freeze snapshots, decrement stock once, set status = issued.
 pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin_write(db).await?;
 
     // Claim the draft as the transaction's first operation. Duplicate issue/edit/delete actions
     // therefore serialize before numbering, snapshots, or stock movements are touched.
@@ -549,90 +615,78 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Void an issued, **unpaid** invoice: reverse stock. The number is kept (never deleted). Invoices
-/// with recorded payments cannot be voided (refunds/credit notes are a later feature) — this keeps
-/// the cash trail intact.
+/// Void an issued, **unpaid** invoice: reverse the stock movements it recorded and release the quote
+/// or job it came from. The number is kept (never deleted). Invoices with recorded payments cannot
+/// be voided (refunds/credit notes are a later feature) — this keeps the cash trail intact.
 pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
-    let mut tx = db.begin().await?;
-    // Claim before reading lines. This competes atomically with payment recording, whose first
-    // operation also takes the invoice write lock, so cash and a void can never cross in flight.
-    let claimed: Option<i64> = sqlx::query_scalar(
+    let mut tx = begin_write(db).await?;
+    let claimed: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
         "UPDATE invoice SET status = 'void', voided_at = datetime('now') \
          WHERE id = ? AND status IN ('issued', 'part_paid', 'paid') \
-           AND NOT EXISTS (SELECT 1 FROM payment_allocation \
-                           WHERE invoice_id = ? AND amount_minor > 0) \
-         RETURNING id",
+           AND COALESCE((SELECT SUM(amount_minor) FROM payment_allocation \
+                         WHERE invoice_id = ?), 0) = 0 \
+         RETURNING source_quote_id, source_job_id",
     )
     .bind(id)
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    if claimed.is_none() {
+    let Some((source_quote_id, source_job_id)) = claimed else {
         return Err(DataError::Other(
             "invoice not found, already void, still a draft, or has recorded payments".into(),
         ));
-    }
+    };
 
-    let lines = sqlx::query_as::<_, (Option<i64>, String)>(
-        "SELECT item_id, quantity FROM invoice_line WHERE invoice_id = ?",
+    // Reverse exactly what issuing recorded, rather than re-deriving it from the items' current
+    // settings: an item's tracking can be switched on after the sale, which must not invent stock.
+    let sold: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT item_id, SUM(qty_delta) FROM stock_movement \
+         WHERE ref_type = 'invoice' AND ref_id = ? GROUP BY item_id HAVING SUM(qty_delta) <> 0",
     )
     .bind(id)
     .fetch_all(&mut *tx)
     .await?;
-    for (item_id, qty_str) in lines {
-        if let Some(item_id) = item_id {
-            let tracked: Option<bool> = sqlx::query_scalar("SELECT tracked FROM item WHERE id = ?")
-                .bind(item_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-            if tracked == Some(true) {
-                let qty = tracked_qty(&qty_str)?;
-                if qty != 0 {
-                    items::apply_movement(
-                        &mut tx,
-                        item_id,
-                        qty,
-                        MovementReason::Return,
-                        Some("invoice-void"),
-                        Some(id),
-                        "",
-                    )
-                    .await?;
-                }
-            }
-        }
+    for (item_id, delta) in sold {
+        items::apply_movement(
+            &mut tx,
+            item_id,
+            -delta,
+            MovementReason::Return,
+            Some("invoice-void"),
+            Some(id),
+            "",
+        )
+        .await?;
     }
+    release_sources(&mut tx, id, source_quote_id, source_job_id).await?;
     tx.commit().await?;
     Ok(())
 }
 
 pub async fn list(db: &Db) -> Result<Vec<InvoiceRow>, DataError> {
-    Ok(sqlx::query_as::<_, InvoiceRow>(
-        "SELECT id, customer_id, number, status, issue_date, due_date, subtotal_minor, tax_minor, \
-         total_minor, notes, created_at FROM invoice ORDER BY id DESC",
+    Ok(
+        sqlx::query_as::<_, InvoiceRow>(concat!(invoice_row_select!(), " ORDER BY i.id DESC"))
+            .fetch_all(db)
+            .await?,
     )
-    .fetch_all(db)
-    .await?)
 }
 
 pub async fn list_for_customer(db: &Db, customer_id: i64) -> Result<Vec<InvoiceRow>, DataError> {
-    Ok(sqlx::query_as::<_, InvoiceRow>(
-        "SELECT id, customer_id, number, status, issue_date, due_date, subtotal_minor, tax_minor, \
-         total_minor, notes, created_at FROM invoice WHERE customer_id = ? ORDER BY id DESC",
-    )
+    Ok(sqlx::query_as::<_, InvoiceRow>(concat!(
+        invoice_row_select!(),
+        " WHERE i.customer_id = ? ORDER BY i.id DESC"
+    ))
     .bind(customer_id)
     .fetch_all(db)
     .await?)
 }
 
 pub async fn get_detail(db: &Db, id: i64) -> Result<Option<InvoiceDetail>, DataError> {
-    let invoice = sqlx::query_as::<_, InvoiceRow>(
-        "SELECT id, customer_id, number, status, issue_date, due_date, subtotal_minor, tax_minor, \
-         total_minor, notes, created_at FROM invoice WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await?;
+    let invoice =
+        sqlx::query_as::<_, InvoiceRow>(concat!(invoice_row_select!(), " WHERE i.id = ?"))
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
     let Some(invoice) = invoice else {
         return Ok(None);
     };
