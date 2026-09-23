@@ -8,6 +8,7 @@ use sqlx::FromRow;
 
 use crate::db::{begin_write, Db};
 use crate::error::DataError;
+use crate::validation::valid_business_date;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Payment {
@@ -41,6 +42,25 @@ pub async fn record_payment(
     method: &str,
     reference: &str,
 ) -> Result<i64, DataError> {
+    record_payment_dated(db, invoice_id, amount_minor, method, reference, None).await
+}
+
+/// [`record_payment`] with the date the money was received (`YYYY-MM-DD`, not in the future).
+/// `None` records it as received now. Cash reports and receipts use this date.
+pub async fn record_payment_dated(
+    db: &Db,
+    invoice_id: i64,
+    amount_minor: i64,
+    method: &str,
+    reference: &str,
+    received_on: Option<&str>,
+) -> Result<i64, DataError> {
+    let received_on = received_on.map(str::trim).filter(|d| !d.is_empty());
+    if received_on.is_some_and(|date| !valid_business_date(date)) {
+        return Err(DataError::Other(
+            "payment date must be a valid YYYY-MM-DD date".into(),
+        ));
+    }
     if amount_minor <= 0 {
         return Err(DataError::Other("payment amount must be positive".into()));
     }
@@ -84,8 +104,21 @@ pub async fn record_payment(
     }
     if amount_minor > outstanding {
         return Err(DataError::Other(format!(
-            "payment exceeds the outstanding balance (maximum is {outstanding} minor units)"
+            "payment exceeds the outstanding balance of {}.{:02}",
+            outstanding / 100,
+            outstanding % 100
         )));
+    }
+    if let Some(date) = received_on {
+        let future: bool = sqlx::query_scalar("SELECT ? > date('now','localtime')")
+            .bind(date)
+            .fetch_one(&mut *tx)
+            .await?;
+        if future {
+            return Err(DataError::Other(
+                "a payment can't be dated in the future".into(),
+            ));
+        }
     }
     let alloc = amount_minor;
 
@@ -93,9 +126,11 @@ pub async fn record_payment(
     // audit stamp — UTC would show "yesterday" for morning payments east of Greenwich.
     let payment_id = sqlx::query(
         "INSERT INTO payment (customer_id, date, amount_minor, method, reference) \
-         VALUES (?, datetime('now','localtime'), ?, ?, ?)",
+         VALUES (?1, CASE WHEN ?2 IS NULL OR ?2 = date('now','localtime') \
+                          THEN datetime('now','localtime') ELSE ?2 || ' 12:00:00' END, ?3, ?4, ?5)",
     )
     .bind(customer_id)
+    .bind(received_on)
     .bind(amount_minor)
     .bind(method)
     .bind(reference)
@@ -314,6 +349,27 @@ mod tests {
         delete_payment(&pool, cash).await?;
         assert_eq!(status(pool.clone()).await, "issued");
         assert!(delete_payment(&pool, 99999).await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn payments_record_the_date_received(pool: Db) -> Result<(), DataError> {
+        let inv = issued_invoice(&pool, 10000).await;
+        record_payment_dated(&pool, inv, 2500, "cheque", "", Some("2026-01-05")).await?;
+        let payments = list_for_invoice(&pool, inv).await?;
+        assert!(payments[0].date.starts_with("2026-01-05"));
+
+        assert!(
+            record_payment_dated(&pool, inv, 100, "cash", "", Some("2999-01-01"))
+                .await
+                .is_err(),
+            "future dates are rejected"
+        );
+        assert!(
+            record_payment_dated(&pool, inv, 100, "cash", "", Some("2026-+1-05"))
+                .await
+                .is_err()
+        );
         Ok(())
     }
 }

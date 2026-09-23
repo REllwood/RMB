@@ -34,3 +34,8 @@ export function formatMoney(
     }).format(major)} ${currency}`;
   }
 }
+
+/** How a document number will look, e.g. ("INV-", 7, 4) → "INV-0007" (matches the backend). */
+export function formatNumberPreview(prefix: string, sequence: number, pad: number): string {
+  return `${prefix.trim()}${String(sequence).padStart(pad, "0")}`;
+}

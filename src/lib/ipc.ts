@@ -91,8 +91,13 @@ export const ipc = {
   deleteInvoiceDraft: (id: number) => invoke<void>("delete_invoice_draft", { id }),
   issueInvoice: (id: number) => invoke<void>("issue_invoice", { id }),
   voidInvoice: (id: number) => invoke<void>("void_invoice", { id }),
-  recordPayment: (invoiceId: number, amountMinor: number, method: string, reference: string) =>
-    invoke<number>("record_payment", { invoiceId, amountMinor, method, reference }),
+  recordPayment: (
+    invoiceId: number,
+    amountMinor: number,
+    method: string,
+    reference: string,
+    date: string | null,
+  ) => invoke<number>("record_payment", { invoiceId, amountMinor, method, reference, date }),
   invoicePayments: (invoiceId: number) => invoke<Payment[]>("invoice_payments", { invoiceId }),
   deletePayment: (id: number) => invoke<void>("delete_payment", { id }),
 

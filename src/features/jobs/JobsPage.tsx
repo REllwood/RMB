@@ -5,7 +5,14 @@ import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { JobMaterialInput, TimeEntryInput } from "@/lib/types";
 import { todayLocalISO } from "@/lib/format";
-import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
+import {
+  labourAmountMinor,
+  lineAmountMinor,
+  minorToInput,
+  parseMoney,
+  parseWholeNumber,
+  useMoneyFormat,
+} from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/dialog";
@@ -24,7 +31,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
-import { normaliseQuantity } from "@/features/shared/lines";
+import {
+  defaultTax,
+  isWholeQuantity,
+  NO_TAX,
+  normaliseQuantity,
+  taxKey,
+  taxLabel,
+  taxOptions,
+  toChoice,
+  type TaxChoice,
+} from "@/features/shared/lines";
 
 type View = { mode: "list" } | { mode: "create" } | { mode: "detail"; id: number };
 
@@ -217,6 +234,7 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   const q = useIpcQuery(["job", id], () => ipc.getJob(id));
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
+  const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
   const invalidate: unknown[][] = [["job", id], ["jobs"]];
   const addTime = useIpcMutation((e: TimeEntryInput) => ipc.addTimeEntry(id, e), invalidate);
   const addMaterial = useIpcMutation(
@@ -237,43 +255,43 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   const items = itemsQ.data ?? [];
   const [tDate, setTDate] = useState(todayLocalISO());
   const [tMinutes, setTMinutes] = useState("60");
-  const [tRate, setTRate] = useState("0.00");
+  // null until edited: the rate starts from the job's last entry, the tax from the business default.
+  const [tRate, setTRate] = useState<string | null>(null);
   const [tDesc, setTDesc] = useState("");
-  const [tTax, setTTax] = useState(-1);
+  const [tTax, setTTax] = useState<string | null>(null);
   const [mItem, setMItem] = useState<number | null>(null);
   const [mDesc, setMDesc] = useState("");
   const [mQty, setMQty] = useState("1");
   const [mPrice, setMPrice] = useState("0.00");
-  const [mTax, setMTax] = useState(-1);
+  const [mTax, setMTax] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<null | "invoice" | "delete">(null);
 
-  if (q.isLoading || taxQ.isLoading || itemsQ.isLoading) return <Loading />;
-  const loadError = q.error ?? taxQ.error ?? itemsQ.error;
+  if (q.isLoading || taxQ.isLoading || itemsQ.isLoading || settingsQ.isLoading) return <Loading />;
+  const loadError = q.error ?? taxQ.error ?? itemsQ.error ?? settingsQ.error;
   if (loadError)
     return (
       <ErrorState
         error={loadError}
-        onRetry={() => Promise.all([q.refetch(), taxQ.refetch(), itemsQ.refetch()])}
+        onRetry={() =>
+          Promise.all([q.refetch(), taxQ.refetch(), itemsQ.refetch(), settingsQ.refetch()])
+        }
       />
     );
   if (!q.data) return <EmptyState title="Job not found" />;
-  const { job, time_entries, materials, labour_total_minor, materials_total_minor } = q.data;
-  const taxOf = (idx: number) =>
-    idx >= 0 && taxes[idx]
-      ? { name: taxes[idx].name, bp: taxes[idx].rate_bp, inc: taxes[idx].inclusive }
-      : { name: "No Tax", bp: 0, inc: false };
+  const { job, time_entries, materials } = q.data;
+  const options = taxOptions(taxes);
+  const defaultKey = taxKey(defaultTax(taxes, settingsQ.data?.default_tax_rate_id));
+  const taxOf = (key: string | null): TaxChoice =>
+    options.find((o) => taxKey(o) === (key ?? defaultKey)) ?? NO_TAX;
   const billable = job.status !== "invoiced";
   const hasUnbilled =
     time_entries.some((entry) => !entry.invoiced) ||
     materials.some((material) => !material.invoiced);
-  const minutes = Number(tMinutes);
-  const hourlyRate = parseMoney(tRate);
-  const timeValid =
-    Boolean(tDate) &&
-    Number.isInteger(minutes) &&
-    minutes > 0 &&
-    hourlyRate !== null &&
-    hourlyRate >= 0;
+  const lastRate = time_entries[time_entries.length - 1]?.rate_minor;
+  const rateText = tRate ?? (lastRate === undefined ? "" : minorToInput(lastRate));
+  const minutes = parseWholeNumber(tMinutes, { min: 1, max: 1_000_000 });
+  const hourlyRate = parseMoney(rateText);
+  const timeValid = Boolean(tDate) && minutes !== null && hourlyRate !== null && hourlyRate >= 0;
   const materialQuantity = normaliseQuantity(mQty);
   const materialPrice = parseMoney(mPrice);
   const selectedMaterial = mItem === null ? undefined : items.find((item) => item.id === mItem);
@@ -281,8 +299,7 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
     Boolean(mDesc.trim()) &&
     materialQuantity !== null &&
     materialPrice !== null &&
-    materialPrice >= 0 &&
-    (!selectedMaterial?.tracked || Number.isInteger(Number(materialQuantity)));
+    (!selectedMaterial?.tracked || isWholeQuantity(materialQuantity));
 
   function pickMaterialItem(value: string) {
     if (!value) {
@@ -294,12 +311,12 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
     setMItem(it.id);
     setMDesc(it.name);
     setMPrice(minorToInput(it.default_price_minor));
-    const idx = taxes.findIndex((t) => t.id === it.default_tax_rate_id);
-    setMTax(idx);
+    const tax = taxes.find((t) => t.id === it.default_tax_rate_id);
+    setMTax(taxKey(tax ? toChoice(tax) : NO_TAX));
   }
 
   async function onAddTime() {
-    if (!timeValid || hourlyRate === null) return;
+    if (!timeValid || hourlyRate === null || minutes === null) return;
     const t = taxOf(tTax);
     try {
       await addTime.mutateAsync({
@@ -309,7 +326,7 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
         description: tDesc,
         tax_rate_name: t.name,
         tax_rate_bp: t.bp,
-        tax_inclusive: t.inc,
+        tax_inclusive: t.inclusive,
       });
       setTDesc("");
     } catch {
@@ -327,9 +344,10 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
         unit_price_minor: materialPrice,
         tax_rate_name: t.name,
         tax_rate_bp: t.bp,
-        tax_inclusive: t.inc,
+        tax_inclusive: t.inclusive,
       });
       setMItem(null);
+      setMTax(null);
       setMDesc("");
       setMQty("1");
       setMPrice("0.00");
@@ -339,7 +357,7 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   }
 
   // Bill from exact minutes; rounding displayed hours must never change the amount charged.
-  const rowLabour = (rate: number, minutes: number) => Math.round((rate * minutes) / 60);
+  const rowLabour = labourAmountMinor;
 
   return (
     <div className="space-y-4">
@@ -450,10 +468,11 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                 <Field
                   label="Minutes"
                   error={
-                    tMinutes && (!Number.isInteger(minutes) || minutes <= 0)
-                      ? "Enter whole minutes above zero"
+                    tMinutes && minutes === null
+                      ? "Enter whole minutes from 1 to 1,000,000"
                       : undefined
                   }
+                  hint={minutes !== null ? `${(minutes / 60).toFixed(2)} h` : undefined}
                 >
                   {(p) => (
                     <Input
@@ -467,18 +486,20 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                 </Field>
                 <Field
                   label="Rate/hour"
+                  required
                   error={
-                    tRate && (hourlyRate === null || hourlyRate < 0)
-                      ? "Enter a valid non-negative amount"
+                    rateText && (hourlyRate === null || hourlyRate < 0)
+                      ? "Enter a valid amount with at most two decimal places"
                       : undefined
                   }
+                  hint={hourlyRate === 0 ? "This time will be billed at zero" : undefined}
                 >
                   {(p) => (
                     <Input
                       {...p}
                       inputMode="decimal"
                       className="w-28"
-                      value={tRate}
+                      value={rateText}
                       onChange={(e) => setTRate(e.target.value)}
                     />
                   )}
@@ -497,14 +518,13 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                   {(p) => (
                     <Select
                       {...p}
-                      className="w-36"
-                      value={tTax}
-                      onChange={(e) => setTTax(Number(e.target.value))}
+                      className="w-44"
+                      value={tTax ?? defaultKey}
+                      onChange={(e) => setTTax(e.target.value)}
                     >
-                      <option value={-1}>No Tax</option>
-                      {taxes.map((t, idx) => (
-                        <option key={t.id} value={idx}>
-                          {t.name}
+                      {options.map((o) => (
+                        <option key={taxKey(o)} value={taxKey(o)}>
+                          {taxLabel(o)}
                         </option>
                       ))}
                     </Select>
@@ -548,7 +568,9 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                         {money(m.unit_price_minor)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {money(Math.round(m.unit_price_minor * (Number(m.quantity) || 0)))}
+                        {money(
+                          lineAmountMinor(m.unit_price_minor, normaliseQuantity(m.quantity) ?? "0"),
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         {!m.invoiced && (
@@ -604,7 +626,7 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                       ? "Enter a quantity above zero"
                       : selectedMaterial?.tracked &&
                           materialQuantity !== null &&
-                          !Number.isInteger(Number(materialQuantity))
+                          !isWholeQuantity(materialQuantity)
                         ? "Tracked products need a whole quantity"
                         : undefined
                   }
@@ -622,8 +644,8 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                 <Field
                   label="Price"
                   error={
-                    mPrice && (materialPrice === null || materialPrice < 0)
-                      ? "Enter a valid non-negative amount"
+                    mPrice && materialPrice === null
+                      ? "Enter a valid amount with at most two decimal places"
                       : undefined
                   }
                 >
@@ -641,14 +663,13 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                   {(p) => (
                     <Select
                       {...p}
-                      className="w-36"
-                      value={mTax}
-                      onChange={(e) => setMTax(Number(e.target.value))}
+                      className="w-44"
+                      value={mTax ?? defaultKey}
+                      onChange={(e) => setMTax(e.target.value)}
                     >
-                      <option value={-1}>No Tax</option>
-                      {taxes.map((t, idx) => (
-                        <option key={t.id} value={idx}>
-                          {t.name}
+                      {options.map((o) => (
+                        <option key={taxKey(o)} value={taxKey(o)}>
+                          {taxLabel(o)}
                         </option>
                       ))}
                     </Select>
@@ -668,9 +689,12 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
           </section>
 
           <div className="ml-auto grid max-w-xs gap-1 border-t pt-4 text-sm">
-            <Row label="Labour" value={money(labour_total_minor)} />
-            <Row label="Materials" value={money(materials_total_minor)} />
-            <Row label="Total" value={money(labour_total_minor + materials_total_minor)} strong />
+            <Row label="Subtotal" value={money(q.data.subtotal_minor)} />
+            <Row label="Tax" value={money(q.data.tax_minor)} />
+            <Row label="Total" value={money(q.data.total_minor)} strong />
+            {billable && (
+              <Row label="Still to invoice" value={money(q.data.unbilled_total_minor)} />
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t pt-4">

@@ -4,7 +4,8 @@ import { Plus } from "lucide-react";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { Item, ItemInput } from "@/lib/types";
-import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
+import { minorToInput, parseMoney, parseWholeNumber, useMoneyFormat } from "@/lib/money";
+import { taxLabel, toChoice } from "@/features/shared/lines";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
@@ -23,7 +24,8 @@ import {
 } from "@/components/ui/table";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
 
-type Draft = { id: number | null; input: ItemInput; price: string };
+/** Item being edited; price and reorder point stay as typed text until they're parsed on save. */
+type Draft = { id: number | null; input: ItemInput; price: string; reorder: string };
 
 const EMPTY: Draft = {
   id: null,
@@ -38,6 +40,7 @@ const EMPTY: Draft = {
     reorder_point: null,
   },
   price: "0.00",
+  reorder: "",
 };
 
 export function CatalogPage() {
@@ -77,13 +80,36 @@ export function CatalogPage() {
         reorder_point: it.reorder_point,
       },
       price: minorToInput(it.default_price_minor),
+      reorder: it.reorder_point === null ? "" : String(it.reorder_point),
     });
   }
+  const draftPrice = draft ? parseMoney(draft.price) : null;
+  const priceError =
+    draft && (draftPrice === null || draftPrice < 0)
+      ? "Enter a non-negative amount with at most two decimal places"
+      : undefined;
+  const tracksStock = draft?.input.kind === "product";
+  const draftReorder =
+    draft && draft.reorder.trim() !== ""
+      ? parseWholeNumber(draft.reorder, { min: 0, max: 1_000_000_000 })
+      : null;
+  const reorderError =
+    tracksStock && draft && draft.reorder.trim() !== "" && draftReorder === null
+      ? "Enter a whole number of units (0 or more), or leave blank for no alert"
+      : undefined;
+  const draftValid =
+    Boolean(draft?.input.name.trim()) &&
+    Boolean(draft?.input.unit.trim()) &&
+    !priceError &&
+    !reorderError;
+
   async function onSubmit() {
-    if (!draft || !draft.input.name.trim()) return;
-    const price = parseMoney(draft.price);
-    if (price === null || price < 0) return;
-    const input: ItemInput = { ...draft.input, default_price_minor: price };
+    if (!draft || !draftValid || draftPrice === null) return;
+    const input: ItemInput = {
+      ...draft.input,
+      default_price_minor: draftPrice,
+      reorder_point: tracksStock ? draftReorder : null,
+    };
     try {
       if (draft.id === null) await createMut.mutateAsync(input);
       else await updateMut.mutateAsync({ id: draft.id, input });
@@ -166,14 +192,7 @@ export function CatalogPage() {
                 />
               )}
             </Field>
-            <Field
-              label="Default price"
-              error={
-                parseMoney(draft.price) === null || (parseMoney(draft.price) ?? -1) < 0
-                  ? "Enter a valid non-negative amount with no more than two decimal places"
-                  : undefined
-              }
-            >
+            <Field label="Default price" error={priceError}>
               {(p) => (
                 <Input
                   {...p}
@@ -195,22 +214,24 @@ export function CatalogPage() {
                   <option value="">— None —</option>
                   {taxQ.data?.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {r.name}
+                      {taxLabel(toChoice(r))}
                     </option>
                   ))}
                 </Select>
               )}
             </Field>
             {draft.input.kind === "product" && (
-              <Field label="Reorder point" hint="Low-stock alert at or below this">
+              <Field
+                label="Reorder point"
+                hint="Low-stock alert at or below this. Leave blank for no alert."
+                error={reorderError}
+              >
                 {(p) => (
                   <Input
                     {...p}
                     inputMode="numeric"
-                    value={draft.input.reorder_point ?? ""}
-                    onChange={(e) =>
-                      field("reorder_point", e.target.value ? Number(e.target.value) : null)
-                    }
+                    value={draft.reorder}
+                    onChange={(e) => setDraft((d) => (d ? { ...d, reorder: e.target.value } : d))}
                   />
                 )}
               </Field>
@@ -218,12 +239,7 @@ export function CatalogPage() {
             <div className="flex gap-2 sm:col-span-2">
               <Button
                 onClick={onSubmit}
-                disabled={
-                  !draft.input.name.trim() ||
-                  !draft.input.unit.trim() ||
-                  parseMoney(draft.price) === null ||
-                  (parseMoney(draft.price) ?? -1) < 0
-                }
+                disabled={!draftValid}
                 loading={createMut.isPending || updateMut.isPending}
                 loadingLabel="Saving…"
               >
@@ -370,8 +386,10 @@ function AdjustStockDialog({
 }) {
   const [delta, setDelta] = useState("");
   const [note, setNote] = useState("manual adjustment");
-  const parsed = Number(delta);
-  const valid = Number.isInteger(parsed) && parsed !== 0;
+  const parsed = parseWholeNumber(delta, { min: -1_000_000_000, max: 1_000_000_000 });
+  const valid = parsed !== null && parsed !== 0;
+  const error =
+    delta.trim() && !valid ? "Enter a whole number other than zero, e.g. 10 or -3" : undefined;
 
   return (
     <Dialog
@@ -388,7 +406,7 @@ function AdjustStockDialog({
             disabled={!valid}
             loading={pending}
             loadingLabel="Saving…"
-            onClick={() => valid && onSubmit(parsed, note)}
+            onClick={() => valid && parsed !== null && onSubmit(parsed, note)}
           >
             Adjust stock
           </Button>
@@ -396,7 +414,16 @@ function AdjustStockDialog({
       }
     >
       <div className="grid gap-4">
-        <Field label="Change" hint="e.g. 10 received, or -3 damaged" required>
+        <Field
+          label="Change"
+          required
+          error={error}
+          hint={
+            valid && parsed !== null
+              ? `New quantity: ${item.qty_on_hand + parsed}`
+              : "e.g. 10 received, or -3 damaged"
+          }
+        >
           {(p) => (
             <Input
               {...p}

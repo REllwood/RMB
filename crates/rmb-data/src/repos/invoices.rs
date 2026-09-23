@@ -838,9 +838,21 @@ mod tests {
         // Later edits must not rewrite the identity or currency of the issued invoice.
         let mut changed_settings = settings::get(&pool).await?;
         changed_settings.business_name = "Renamed business".into();
-        changed_settings.currency = "USD".into();
         changed_settings.tax_number = "NEW-NUMBER".into();
         settings::update(&pool, &changed_settings).await?;
+        // The currency is locked once invoices are issued; older builds allowed changing it.
+        assert!(settings::update(
+            &pool,
+            &settings::Settings {
+                currency: "USD".into(),
+                ..changed_settings
+            }
+        )
+        .await
+        .is_err());
+        sqlx::query("UPDATE settings SET currency = 'USD' WHERE id = 1")
+            .execute(&pool)
+            .await?;
         settings::set_logo_asset(
             &pool,
             Some("/test/new-logo.jpg"),

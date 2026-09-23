@@ -1,7 +1,7 @@
 import { Plus, X } from "lucide-react";
 
 import type { Item, TaxRate } from "@/lib/types";
-import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
+import { minorToInput, useMoneyFormat } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -16,14 +16,15 @@ import {
 import {
   emptyLine,
   hasLineIssues,
+  lineAmount,
   lineIssueMessages,
   NO_TAX,
-  normaliseQuantity,
   taxKey,
+  taxLabel,
+  taxOptions,
   toChoice,
   type EditLine,
   type LineIssue,
-  type TaxChoice,
 } from "@/features/shared/lines";
 
 /**
@@ -38,6 +39,7 @@ export function LineEditor({
   items,
   idPrefix,
   issues = [],
+  defaultTaxRateId,
 }: {
   lines: EditLine[];
   onChange: (lines: EditLine[]) => void;
@@ -45,6 +47,8 @@ export function LineEditor({
   items: Item[];
   idPrefix: string;
   issues?: LineIssue[];
+  /** The business's default tax for new lines. */
+  defaultTaxRateId?: number | null;
 }) {
   const money = useMoneyFormat();
   const products = items.filter((i) => i.kind === "product");
@@ -78,10 +82,6 @@ export function LineEditor({
     );
   }
 
-  function lineTotal(l: EditLine): number {
-    return Math.round((parseMoney(l.price) ?? 0) * Number(normaliseQuantity(l.quantity) ?? 0));
-  }
-
   return (
     <div className="space-y-3">
       <Table>
@@ -100,9 +100,8 @@ export function LineEditor({
         </TableHeader>
         <TableBody>
           {lines.map((l, i) => {
-            // Offer No Tax + active rates; keep the line's stored rate visible even if archived.
-            const options: TaxChoice[] = [NO_TAX, ...taxes.map(toChoice)];
-            if (!options.some((o) => taxKey(o) === taxKey(l.tax))) options.unshift(l.tax);
+            // Offer No Tax + active rates; keep the line's stored rate visible even if retired.
+            const options = taxOptions(taxes, l.tax);
             const issue = issues[i] ?? {};
             const errorSummaryId = `${idPrefix}-line-errors`;
             return (
@@ -185,13 +184,13 @@ export function LineEditor({
                   >
                     {options.map((o) => (
                       <option key={taxKey(o)} value={taxKey(o)}>
-                        {o.name}
+                        {taxLabel(o)}
                       </option>
                     ))}
                   </Select>
                 </TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">
-                  {money(lineTotal(l))}
+                  {money(lineAmount(l))}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button
@@ -221,7 +220,11 @@ export function LineEditor({
             .join(" · ")}
         </div>
       )}
-      <Button variant="outline" size="sm" onClick={() => onChange([...lines, emptyLine(taxes)])}>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onChange([...lines, emptyLine(taxes, defaultTaxRateId)])}
+      >
         <Plus className="size-4" /> Add line
       </Button>
     </div>

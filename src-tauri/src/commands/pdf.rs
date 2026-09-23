@@ -471,6 +471,8 @@ mod tests {
             quote_prefix: "Q-".into(),
             quote_next_seq: 2,
             number_pad: 4,
+            default_tax_rate_id: None,
+            currency_locked: false,
         }
     }
 

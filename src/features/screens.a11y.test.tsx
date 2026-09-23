@@ -24,6 +24,8 @@ vi.mock("@/lib/ipc", () => ({
       quote_prefix: "Q-",
       quote_next_seq: 1,
       number_pad: 4,
+      default_tax_rate_id: null,
+      currency_locked: false,
     }),
     listTaxRates: async () => [
       { id: 1, name: "VAT 20%", rate_bp: 2000, inclusive: false, archived: false },

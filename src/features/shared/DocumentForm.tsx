@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
-import { parseMoney, useMoneyFormat } from "@/lib/money";
+import { useMoneyFormat } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field } from "@/components/ui/field";
@@ -14,7 +14,7 @@ import { LineEditor } from "@/features/shared/LineEditor";
 import {
   emptyLine,
   hasLineIssues,
-  normaliseQuantity,
+  previewTotals,
   toLineInputs,
   validateEditLines,
   type EditLine,
@@ -49,6 +49,7 @@ export function DocumentForm({
   const customersQ = useIpcQuery(["customers", ""], () => ipc.listCustomers());
   const taxQ = useIpcQuery(["tax-rates"], () => ipc.listTaxRates());
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
+  const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
   const money = useMoneyFormat();
 
   const [customerId, setCustomerId] = useState<number | null>(initial?.customer_id ?? null);
@@ -82,7 +83,8 @@ export function DocumentForm({
     { successMessage: initial ? "Draft updated" : undefined },
   );
 
-  if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading) return <Loading />;
+  if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading || settingsQ.isLoading)
+    return <Loading />;
   const loadError = customersQ.error ?? taxQ.error ?? itemsQ.error;
   if (loadError)
     return (
@@ -101,15 +103,12 @@ export function DocumentForm({
 
   const taxes = taxQ.data ?? [];
   const items = itemsQ.data ?? [];
-  const lines = edited ?? [emptyLine(taxes)];
+  const defaultTaxRateId = settingsQ.data?.default_tax_rate_id ?? null;
+  const lines = edited ?? [emptyLine(taxes, defaultTaxRateId)];
   const lineIssues = validateEditLines(lines, items);
   const lineProblems = hasLineIssues(lineIssues);
   const payload = toLineInputs(lines);
-  const netPreview = lines.reduce(
-    (sum, l) =>
-      sum + Math.round((parseMoney(l.price) ?? 0) * Number(normaliseQuantity(l.quantity) ?? 0)),
-    0,
-  );
+  const totals = previewTotals(lines);
 
   async function onSave() {
     if (customerId === null || payload.length === 0 || lineProblems) return;
@@ -165,14 +164,17 @@ export function DocumentForm({
           items={items}
           idPrefix={kind}
           issues={lineIssues}
+          defaultTaxRateId={defaultTaxRateId}
         />
 
-        <div className="flex items-center justify-end">
-          <p className="text-sm text-muted-foreground">
-            Approx. subtotal (excl. tax):{" "}
-            <span className="font-medium text-foreground tabular-nums">{money(netPreview)}</span>
-          </p>
-        </div>
+        <dl className="ml-auto grid max-w-xs grid-cols-[1fr_auto] gap-x-6 gap-y-1 text-sm">
+          <dt className="text-muted-foreground">Subtotal</dt>
+          <dd className="text-right tabular-nums">{money(totals.subtotal)}</dd>
+          <dt className="text-muted-foreground">Tax</dt>
+          <dd className="text-right tabular-nums">{money(totals.tax)}</dd>
+          <dt className="font-medium">Total</dt>
+          <dd className="text-right font-semibold tabular-nums">{money(totals.total)}</dd>
+        </dl>
 
         <Field label="Notes">
           {(p) => <Textarea {...p} value={notes} onChange={(e) => setNotes(e.target.value)} />}

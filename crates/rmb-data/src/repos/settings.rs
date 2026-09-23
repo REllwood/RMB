@@ -26,6 +26,13 @@ pub struct Settings {
     pub quote_prefix: String,
     pub quote_next_seq: i64,
     pub number_pad: i64,
+    /// The tax rate new document lines start with (None: the first non-zero rate).
+    #[serde(default)]
+    pub default_tax_rate_id: Option<i64>,
+    /// Read-only: true once an invoice has been issued, after which the currency can't change
+    /// (issued invoices and every total are in that currency).
+    #[serde(default)]
+    pub currency_locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +45,9 @@ pub async fn get(db: &Db) -> Result<Settings, DataError> {
     Ok(sqlx::query_as::<_, Settings>(
         "SELECT business_name, address, email, phone, logo_path, currency, tax_label, tax_number, \
          prices_tax_inclusive, invoice_prefix, invoice_next_seq, quote_prefix, quote_next_seq, \
-         number_pad FROM settings WHERE id = 1",
+         number_pad, default_tax_rate_id, \
+         EXISTS(SELECT 1 FROM invoice WHERE status <> 'draft') AS currency_locked \
+         FROM settings WHERE id = 1",
     )
     .fetch_one(db)
     .await?)
@@ -84,11 +93,36 @@ pub async fn update(db: &Db, s: &Settings) -> Result<(), DataError> {
             "number padding must be between 1 and 12 digits".into(),
         ));
     }
+    if let Some(tax_id) = s.default_tax_rate_id {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM tax_rate WHERE id = ? AND archived = 0)",
+        )
+        .bind(tax_id)
+        .fetch_one(db)
+        .await?;
+        if !active {
+            return Err(DataError::Other(
+                "the default tax rate was not found".into(),
+            ));
+        }
+    }
+    let (stored_currency, locked): (String, bool) = sqlx::query_as(
+        "SELECT currency, EXISTS(SELECT 1 FROM invoice WHERE status <> 'draft') \
+         FROM settings WHERE id = 1",
+    )
+    .fetch_one(db)
+    .await?;
+    if locked && stored_currency != currency {
+        return Err(DataError::Other(format!(
+            "the currency can't change after invoices have been issued in {stored_currency}; \
+             totals and reports would mix currencies"
+        )));
+    }
 
     let result = sqlx::query(
         "UPDATE settings SET business_name=?, address=?, email=?, phone=?, currency=?, \
          tax_label=?, tax_number=?, prices_tax_inclusive=?, invoice_prefix=?, quote_prefix=?, \
-         number_pad=? WHERE id = 1",
+         number_pad=?, default_tax_rate_id=? WHERE id = 1",
     )
     .bind(business_name)
     .bind(address)
@@ -98,9 +132,10 @@ pub async fn update(db: &Db, s: &Settings) -> Result<(), DataError> {
     .bind(tax_label)
     .bind(tax_number)
     .bind(s.prices_tax_inclusive)
-    .bind(&s.invoice_prefix)
-    .bind(&s.quote_prefix)
+    .bind(invoice_prefix)
+    .bind(quote_prefix)
     .bind(s.number_pad)
+    .bind(s.default_tax_rate_id)
     .execute(db)
     .await?;
     if result.rows_affected() != 1 {
@@ -266,6 +301,10 @@ pub async fn archive_tax_rate(db: &Db, id: i64) -> Result<(), DataError> {
         .bind(id)
         .execute(db)
         .await?;
+    sqlx::query("UPDATE settings SET default_tax_rate_id = NULL WHERE default_tax_rate_id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
     if result.rows_affected() != 1 {
         return Err(DataError::Other("tax rate not found".into()));
     }
@@ -331,25 +370,38 @@ pub async fn apply_tax_preset(db: &Db, country: &str) -> Result<(), DataError> {
     let country = country.trim().to_ascii_uppercase();
     let preset =
         tax_preset(&country).ok_or_else(|| DataError::Other("unknown tax preset".into()))?;
-    let inclusive_default = get(db).await?.prices_tax_inclusive;
     let mut tx = begin_write(db).await?;
+    let inclusive_default: bool =
+        sqlx::query_scalar("SELECT prices_tax_inclusive FROM settings WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await?;
+    let mut first_rate = None;
     for (name, rate_bp) in preset {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM tax_rate WHERE archived = 0 AND lower(name) = lower(?))",
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM tax_rate WHERE archived = 0 AND lower(name) = lower(?)",
         )
         .bind(name)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
-        if exists {
-            continue;
-        }
-        sqlx::query("INSERT INTO tax_rate (name, rate_bp, inclusive) VALUES (?, ?, ?)")
-            .bind(name)
-            .bind(rate_bp)
-            .bind(rate_bp > 0 && inclusive_default)
-            .execute(&mut *tx)
-            .await?;
+        let id = match existing {
+            Some(id) => id,
+            None => sqlx::query("INSERT INTO tax_rate (name, rate_bp, inclusive) VALUES (?, ?, ?)")
+                .bind(name)
+                .bind(rate_bp)
+                .bind(rate_bp > 0 && inclusive_default)
+                .execute(&mut *tx)
+                .await?
+                .last_insert_rowid(),
+        };
+        first_rate.get_or_insert(id);
     }
+    // Each preset lists its standard rate first; make it the default unless one is already chosen.
+    sqlx::query(
+        "UPDATE settings SET default_tax_rate_id = ? WHERE id = 1 AND default_tax_rate_id IS NULL",
+    )
+    .bind(first_rate)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -486,6 +538,61 @@ mod tests {
         settings.number_pad = 4;
         update(&pool, &settings).await?;
         assert_eq!(get(&pool).await?.currency, "AUD");
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn presets_set_the_default_rate_and_issued_invoices_lock_the_currency(
+        pool: Db,
+    ) -> Result<(), DataError> {
+        apply_tax_preset(&pool, "UK").await?;
+        let rates = list_tax_rates(&pool, false).await?;
+        let vat = rates.iter().find(|r| r.name == "VAT 20%").unwrap().id;
+        assert_eq!(get(&pool).await?.default_tax_rate_id, Some(vat));
+
+        // Re-applying a preset keeps an existing choice.
+        let mut s = get(&pool).await?;
+        let reduced = rates.iter().find(|r| r.name == "VAT 5%").unwrap().id;
+        s.default_tax_rate_id = Some(reduced);
+        s.business_name = "Shop".into();
+        s.invoice_prefix = "  INV- ".into();
+        update(&pool, &s).await?;
+        apply_tax_preset(&pool, "UK").await?;
+        let saved = get(&pool).await?;
+        assert_eq!(saved.default_tax_rate_id, Some(reduced));
+        assert_eq!(saved.invoice_prefix, "INV-", "prefixes are stored trimmed");
+
+        // Archiving the default clears it rather than leaving a dangling choice.
+        archive_tax_rate(&pool, reduced).await?;
+        assert_eq!(get(&pool).await?.default_tax_rate_id, None);
+
+        // Currency is free to change until an invoice is issued.
+        let mut s = get(&pool).await?;
+        assert!(!s.currency_locked);
+        s.currency = "EUR".into();
+        update(&pool, &s).await?;
+        let customer = customers::create(
+            &pool,
+            &customers::CustomerInput {
+                name: "C".into(),
+                email: String::new(),
+                phone: String::new(),
+                billing_address: String::new(),
+                notes: String::new(),
+            },
+        )
+        .await?;
+        sqlx::query("INSERT INTO invoice (customer_id, status) VALUES (?, 'issued')")
+            .bind(customer)
+            .execute(&pool)
+            .await?;
+        let mut s = get(&pool).await?;
+        assert!(s.currency_locked);
+        s.currency = "GBP".into();
+        assert!(update(&pool, &s).await.is_err());
+        s.currency = "EUR".into();
+        s.phone = "555".into();
+        update(&pool, &s).await?;
         Ok(())
     }
 }

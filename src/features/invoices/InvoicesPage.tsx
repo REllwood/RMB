@@ -6,6 +6,7 @@ import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { InvoiceDetail, InvoiceRow } from "@/lib/types";
 import { minorToInput, parseMoney, useMoneyFormat } from "@/lib/money";
+import { todayLocalISO } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
@@ -193,34 +194,46 @@ function PaymentDialog({
   open: boolean;
   onClose: () => void;
   balanceMinor: number;
-  onSubmit: (v: { amountMinor: number; method: string; reference: string }) => void;
+  onSubmit: (v: { amountMinor: number; method: string; reference: string; date: string }) => void;
   pending: boolean;
 }) {
+  const money = useMoneyFormat();
+  const today = todayLocalISO();
   const [amount, setAmount] = useState(minorToInput(balanceMinor));
   const [method, setMethod] = useState("bank transfer");
   const [reference, setReference] = useState("");
+  const [date, setDate] = useState(today);
   const parsed = parseMoney(amount);
+  const amountError =
+    parsed === null || parsed <= 0
+      ? "Enter a positive amount with at most two decimal places"
+      : parsed > balanceMinor
+        ? `Amount exceeds the outstanding balance of ${money(balanceMinor)}`
+        : undefined;
+  const dateError = !date
+    ? "Choose the date the payment was received"
+    : date > today
+      ? "The date can't be in the future"
+      : undefined;
+  const valid = !amountError && !dateError && method.trim() !== "";
 
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={() => !pending && onClose()}
       title="Record payment"
       description="Enter an amount up to the outstanding balance. Overpayments are rejected."
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
           <Button
-            disabled={!parsed || parsed <= 0 || parsed > balanceMinor || !method.trim()}
+            disabled={!valid}
             loading={pending}
             loadingLabel="Saving…"
             onClick={() =>
-              parsed &&
-              parsed > 0 &&
-              parsed <= balanceMinor &&
-              onSubmit({ amountMinor: parsed, method, reference })
+              valid && parsed !== null && onSubmit({ amountMinor: parsed, method, reference, date })
             }
           >
             Record payment
@@ -232,13 +245,8 @@ function PaymentDialog({
         <Field
           label="Amount"
           required
-          error={
-            parsed === null || parsed <= 0
-              ? "Enter a valid positive amount"
-              : parsed > balanceMinor
-                ? "Amount exceeds the outstanding balance"
-                : undefined
-          }
+          error={amountError}
+          hint={parsed !== null && !amountError ? `Records ${money(parsed)}` : undefined}
         >
           {(p) => (
             <Input
@@ -246,6 +254,17 @@ function PaymentDialog({
               inputMode="decimal"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+            />
+          )}
+        </Field>
+        <Field label="Date received" required error={dateError}>
+          {(p) => (
+            <Input
+              {...p}
+              type="date"
+              max={today}
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
             />
           )}
         </Field>
@@ -298,8 +317,8 @@ function InvoiceDetailView({
     successMessage: "Draft deleted",
   });
   const pay = useIpcMutation(
-    (v: { amountMinor: number; method: string; reference: string }) =>
-      ipc.recordPayment(id, v.amountMinor, v.method, v.reference),
+    (v: { amountMinor: number; method: string; reference: string; date: string }) =>
+      ipc.recordPayment(id, v.amountMinor, v.method, v.reference, v.date),
     refresh,
     { successMessage: "Payment recorded" },
   );
