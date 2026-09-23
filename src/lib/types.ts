@@ -104,6 +104,8 @@ export interface InvoiceRow {
   created_at: string;
   source_quote_id: number | null;
   source_job_id: number | null;
+  /** Local date it was voided, if it was. */
+  void_date: string | null;
   /** Name frozen on the issued invoice (current name for drafts); kept for deleted customers. */
   customer_name: string;
 }
@@ -330,7 +332,10 @@ export interface TaxSummaryRow {
 
 export interface MonthlySalesRow {
   month: string; // YYYY-MM
+  /** Invoices issued in the month (including any voided later). */
   invoice_count: number;
+  /** Invoices voided in the month; subtracted from its totals. */
+  voided_count: number;
   net_minor: number;
   tax_minor: number;
   gross_minor: number;

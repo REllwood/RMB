@@ -100,16 +100,17 @@ pub async fn export_invoices_csv(
         .into_iter()
         .map(|r| {
             vec![
-                csv_text(r.number.unwrap_or_else(|| format!("Draft #{}", r.id))),
+                csv_text(r.number.unwrap_or_else(|| format!("#{}", r.id))),
                 csv_text(r.customer),
                 r.status,
                 r.issue_date.unwrap_or_default(),
                 r.due_date.unwrap_or_default(),
+                r.void_date.unwrap_or_default(),
                 csv_amount(r.subtotal_minor),
                 csv_amount(r.tax_minor),
                 csv_amount(r.total_minor),
                 csv_amount(r.paid_minor),
-                csv_amount(r.total_minor - r.paid_minor),
+                csv_amount(r.balance_minor),
             ]
         })
         .collect();
@@ -121,6 +122,7 @@ pub async fn export_invoices_csv(
             "status",
             "issue_date",
             "due_date",
+            "void_date",
             "subtotal",
             "tax",
             "total",
@@ -168,7 +170,7 @@ pub async fn export_payments_csv(
 
 #[tauri::command]
 pub async fn export_customers_csv(db: State<'_, Db>, dest: String) -> Result<(), AppError> {
-    let rows = customers::list(&db, None).await?;
+    let rows = customers::export_rows(&db).await?;
     let data = rows
         .into_iter()
         .map(|c| {
@@ -179,6 +181,7 @@ pub async fn export_customers_csv(db: State<'_, Db>, dest: String) -> Result<(),
                 csv_text(c.billing_address),
                 csv_text(c.notes),
                 c.created_at,
+                c.deleted_at.unwrap_or_default(),
             ]
         })
         .collect();
@@ -191,6 +194,7 @@ pub async fn export_customers_csv(db: State<'_, Db>, dest: String) -> Result<(),
             "billing_address",
             "notes",
             "created_at",
+            "deleted_at",
         ],
         data,
     )
