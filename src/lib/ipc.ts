@@ -77,12 +77,8 @@ export const ipc = {
   // invoices + payments
   listInvoices: () => invoke<InvoiceRow[]>("list_invoices"),
   getInvoice: (id: number) => invoke<InvoiceDetail | null>("get_invoice", { id }),
-  createInvoice: (
-    customerId: number,
-    lines: LineInput[],
-    dueDate: string | null,
-    notes: string,
-  ) => invoke<number>("create_invoice", { customerId, lines, dueDate, notes }),
+  createInvoice: (customerId: number, lines: LineInput[], dueDate: string | null, notes: string) =>
+    invoke<number>("create_invoice", { customerId, lines, dueDate, notes }),
   updateInvoiceDraft: (
     id: number,
     customerId: number,
@@ -104,12 +100,8 @@ export const ipc = {
   // quotes
   listQuotes: () => invoke<QuoteRow[]>("list_quotes"),
   getQuote: (id: number) => invoke<QuoteDetail | null>("get_quote", { id }),
-  createQuote: (
-    customerId: number,
-    lines: LineInput[],
-    validUntil: string | null,
-    notes: string,
-  ) => invoke<number>("create_quote", { customerId, lines, validUntil, notes }),
+  createQuote: (customerId: number, lines: LineInput[], validUntil: string | null, notes: string) =>
+    invoke<number>("create_quote", { customerId, lines, validUntil, notes }),
   updateQuoteDraft: (
     id: number,
     customerId: number,
@@ -117,8 +109,7 @@ export const ipc = {
     validUntil: string | null,
     notes: string,
   ) => invoke<void>("update_quote_draft", { id, customerId, lines, validUntil, notes }),
-  setQuoteStatus: (id: number, status: string) =>
-    invoke<void>("set_quote_status", { id, status }),
+  setQuoteStatus: (id: number, status: string) => invoke<void>("set_quote_status", { id, status }),
   deleteQuote: (id: number) => invoke<void>("delete_quote", { id }),
   convertQuoteToInvoice: (id: number) => invoke<number>("convert_quote_to_invoice", { id }),
   convertQuoteToJob: (quoteId: number) => invoke<number>("convert_quote_to_job", { quoteId }),

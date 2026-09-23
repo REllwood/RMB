@@ -7,8 +7,9 @@ No subscriptions, no cloud, works fully offline.
 Most small businesses end up paying £20–50 a month, per user, for a patchwork of tools that each do
 one part of this. RMB is an attempt to cover the whole loop in a single app you download once and own.
 
-> **Status: v1 — feature complete and tested.** Everything below works end to end. Windows and macOS
-> builds are produced from source today; signed installers are still to come (see [Roadmap](#roadmap)).
+> **Status: v1 release candidate.** The core workflows below are implemented and pass the automated
+> release gate. Public deployment still requires a signed and notarised macOS build plus installer
+> testing on clean Windows and macOS machines.
 
 ## What it does
 
@@ -33,23 +34,23 @@ one part of this. RMB is an attempt to cover the whole loop in a single app you 
 - **Payments** — record partial or full payments with method and reference; status flows unpaid →
   part-paid → paid with a live balance. A mis-entered payment can be removed and the status recalculates,
   and any paid invoice can produce a receipt PDF.
-- **Reports & exports** — tax collected per rate for any period (the numbers your BAS or VAT return
-  needs), sales by month and by customer, plus CSV exports of invoices, payments, and customers for
-  your accountant.
+- **Reports & exports** — tax collected per rate for any period, sales by month and by customer, plus
+  CSV exports of invoices, payments, and customers for your accountant. These are operational reports,
+  not tax filing or accounting advice.
 - **PDF export** — branded invoice, quote, and receipt PDFs, generated offline and identical on every OS.
 - **Dashboard** — money owed, overdue count, invoice counts, low stock, and recent activity.
 - **Backup & restore** — your data is a single SQLite file. RMB writes a rotating automatic backup on
   every launch (last 7 kept), plus one-click manual backup and an integrity-checked restore.
 
-Everything is keyboard-accessible (WCAG 2.1 AA target) with light and dark themes.
+The interface targets WCAG 2.1 AA, has light and dark themes, visible focus states and automated
+screen-level accessibility and colour-contrast checks.
 
 ## Install
 
-Grab the installer for your OS from the Releases page.
+Once a release has passed the checklist, grab the installer for your OS from the Releases page.
 
-**macOS (`.dmg`)** — open it and drag RMB to Applications. Builds aren't code-signed yet, so on first
-launch macOS may say it "cannot be opened because Apple cannot check it for malicious software". Go to
-**System Settings → Privacy & Security**, find the message about RMB, and click **Open Anyway**.
+**macOS (`.dmg`)** — open it and drag RMB to Applications. Public builds should be signed and
+notarised. Local developer builds are unsigned and are not suitable for general distribution.
 
 **Windows (`.exe`)** — run the installer; it installs per-user, no admin needed. SmartScreen may warn
 about an unrecognised app on unsigned builds — choose **More info → Run anyway**.
@@ -95,17 +96,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 npm run check                                # types, lint, tests, build
 ```
 
-There are 80 automated tests: the money, tax, and inventory rules are property-tested, every repository
-has integration coverage against a real database (including an end-to-end run through the whole
-quote → job → invoice → payment flow), and every screen is checked for accessibility violations.
+There are 113 automated tests: 80 Rust tests and 33 front-end tests. Money, tax and inventory rules are
+property-tested; repositories run against real SQLite databases; concurrency tests exercise races in
+payments, numbering, stock, quote conversion, job billing and recurring generation; and every screen
+is checked for common accessibility violations. Automated tests don't replace a manual pass over the
+installers and core workflows on clean machines before each release.
 
 ## Roadmap
 
 The core is deliberately general, with room to grow one module at a time. Not built yet:
 
 - Emailing documents, and online card payments (Stripe).
+- Credit notes, refunds and customer account credits.
 - Scheduling and dispatch.
-- Double-entry accounting, purchasing and supplier bills.
+- Expenses, purchasing, suppliers, bills, bank reconciliation and double-entry accounting.
 - A mobile app and multi-user sync — the local-first architecture leaves room for this.
 - Code signing and notarisation for distribution.
 
@@ -114,4 +118,4 @@ Issues and pull requests are welcome.
 ## Licence
 
 **GPL-3.0-or-later** — see [LICENSE](LICENSE). This keeps RMB and anything derived from it free and
-open. All dependencies are permissively licensed (MIT / Apache / BSD) and compatible.
+open. Dependency licences are checked against the reviewed allow-list in [deny.toml](deny.toml).

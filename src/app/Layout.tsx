@@ -54,7 +54,7 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
   }
 
   return (
-    <div className="grid min-h-screen grid-cols-[14rem_1fr] bg-background">
+    <div className="grid min-h-screen grid-cols-[14.5rem_1fr] bg-background">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-2 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground"
@@ -62,9 +62,12 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
         Skip to content
       </a>
 
-      <nav aria-label="Primary" className="flex flex-col gap-1 border-r bg-card p-3">
-        <div className="mb-2 flex items-center gap-2.5 px-2 py-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+      <nav
+        aria-label="Primary"
+        className="flex flex-col gap-1 border-r bg-card/95 p-3 shadow-[1px_0_0_oklch(0_0_0/0.02)]"
+      >
+        <div className="mb-3 flex items-center gap-2.5 px-2 py-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-[0.7rem] bg-primary text-primary-foreground shadow-sm">
             <Store className="size-5" aria-hidden />
           </div>
           <div className="leading-tight">
@@ -82,11 +85,11 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
               onClick={() => setActive(section.id)}
               aria-current={isActive ? "page" : undefined}
               className={cn(
-                "flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors",
+                "relative flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors",
                 "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
                 isActive
                   ? "bg-primary text-primary-foreground"
-                  : "hover:bg-accent hover:text-accent-foreground",
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               )}
             >
               <Icon className="size-4 shrink-0" />
@@ -96,22 +99,21 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
         })}
 
         <div className="mt-auto pt-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start"
-            onClick={toggleTheme}
-            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          >
+          <Button variant="ghost" size="sm" className="w-full justify-start" onClick={toggleTheme}>
             {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
             {theme === "dark" ? "Light mode" : "Dark mode"}
           </Button>
         </div>
       </nav>
 
-      <main id="main" ref={mainRef} tabIndex={-1} className="overflow-y-auto p-6 outline-none lg:p-8">
+      <main
+        id="main"
+        ref={mainRef}
+        tabIndex={-1}
+        className="overflow-y-auto p-6 outline-none lg:p-8"
+      >
         <NavContext.Provider value={setActive}>
-          <div className="mx-auto max-w-6xl">{renderSection(active)}</div>
+          <div className="mx-auto max-w-7xl">{renderSection(active)}</div>
         </NavContext.Provider>
       </main>
     </div>

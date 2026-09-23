@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { LoaderCircle, Plus, Trash2, X } from "lucide-react";
 
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
@@ -13,6 +13,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -23,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
+import { normaliseQuantity } from "@/features/shared/lines";
 
 type View = { mode: "list" } | { mode: "create" } | { mode: "detail"; id: number };
 
@@ -76,7 +78,12 @@ function JobList({ onOpen }: { onOpen: (id: number) => void }) {
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   if (!q.data || q.data.length === 0)
-    return <EmptyState title="No jobs yet" description="Track time and materials against a job, then invoice it." />;
+    return (
+      <EmptyState
+        title="No jobs yet"
+        description="Track time and materials against a job, then invoice it."
+      />
+    );
   return (
     <Card className="overflow-hidden py-0">
       <Table>
@@ -132,10 +139,21 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
 
   async function onSave() {
     if (customerId === null || !title.trim()) return;
-    const id = await create.mutateAsync({ customer_id: customerId, title: title.trim(), description });
-    onCreated(id);
+    try {
+      const id = await create.mutateAsync({
+        customer_id: customerId,
+        title: title.trim(),
+        description,
+      });
+      onCreated(id);
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
 
+  if (customersQ.isLoading) return <Loading label="Loading customers…" />;
+  if (customersQ.error)
+    return <ErrorState error={customersQ.error} onRetry={() => customersQ.refetch()} />;
   if (customersQ.data && customersQ.data.length === 0)
     return <EmptyState title="Add a customer first" description="Jobs belong to a customer." />;
 
@@ -147,7 +165,11 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
       <CardContent className="grid max-w-xl gap-4">
         <Field label="Customer" required>
           {(p) => (
-            <Select {...p} value={customerId ?? ""} onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}>
+            <Select
+              {...p}
+              value={customerId ?? ""}
+              onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
+            >
               <option value="" disabled>
                 Choose a customer…
               </option>
@@ -160,13 +182,27 @@ function JobCreate({ onCreated }: { onCreated: (id: number) => void }) {
           )}
         </Field>
         <Field label="Title" required>
-          {(p) => <Input {...p} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Rewire kitchen" />}
+          {(p) => (
+            <Input
+              {...p}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Rewire kitchen"
+            />
+          )}
         </Field>
         <Field label="Description">
-          {(p) => <Input {...p} value={description} onChange={(e) => setDescription(e.target.value)} />}
+          {(p) => (
+            <Textarea {...p} value={description} onChange={(e) => setDescription(e.target.value)} />
+          )}
         </Field>
         <div>
-          <Button onClick={onSave} disabled={customerId === null || !title.trim() || create.isPending}>
+          <Button
+            onClick={onSave}
+            disabled={customerId === null || !title.trim()}
+            loading={create.isPending}
+            loadingLabel="Creating…"
+          >
             Create job
           </Button>
         </div>
@@ -183,7 +219,10 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   const itemsQ = useIpcQuery(["items", ""], () => ipc.listItems());
   const invalidate: unknown[][] = [["job", id], ["jobs"]];
   const addTime = useIpcMutation((e: TimeEntryInput) => ipc.addTimeEntry(id, e), invalidate);
-  const addMaterial = useIpcMutation((m: JobMaterialInput) => ipc.addJobMaterial(id, m), invalidate);
+  const addMaterial = useIpcMutation(
+    (m: JobMaterialInput) => ipc.addJobMaterial(id, m),
+    invalidate,
+  );
   const delTime = useIpcMutation((t: number) => ipc.deleteTimeEntry(t), invalidate);
   const delMaterial = useIpcMutation((m: number) => ipc.deleteJobMaterial(m), invalidate);
   const setStatus = useIpcMutation((s: string) => ipc.setJobStatus(id, s), invalidate);
@@ -208,8 +247,15 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
   const [mTax, setMTax] = useState(-1);
   const [confirm, setConfirm] = useState<null | "invoice" | "delete">(null);
 
-  if (q.isLoading) return <Loading />;
-  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
+  if (q.isLoading || taxQ.isLoading || itemsQ.isLoading) return <Loading />;
+  const loadError = q.error ?? taxQ.error ?? itemsQ.error;
+  if (loadError)
+    return (
+      <ErrorState
+        error={loadError}
+        onRetry={() => Promise.all([q.refetch(), taxQ.refetch(), itemsQ.refetch()])}
+      />
+    );
   if (!q.data) return <EmptyState title="Job not found" />;
   const { job, time_entries, materials, labour_total_minor, materials_total_minor } = q.data;
   const taxOf = (idx: number) =>
@@ -217,6 +263,26 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
       ? { name: taxes[idx].name, bp: taxes[idx].rate_bp, inc: taxes[idx].inclusive }
       : { name: "No Tax", bp: 0, inc: false };
   const billable = job.status !== "invoiced";
+  const hasUnbilled =
+    time_entries.some((entry) => !entry.invoiced) ||
+    materials.some((material) => !material.invoiced);
+  const minutes = Number(tMinutes);
+  const hourlyRate = parseMoney(tRate);
+  const timeValid =
+    Boolean(tDate) &&
+    Number.isInteger(minutes) &&
+    minutes > 0 &&
+    hourlyRate !== null &&
+    hourlyRate >= 0;
+  const materialQuantity = normaliseQuantity(mQty);
+  const materialPrice = parseMoney(mPrice);
+  const selectedMaterial = mItem === null ? undefined : items.find((item) => item.id === mItem);
+  const materialValid =
+    Boolean(mDesc.trim()) &&
+    materialQuantity !== null &&
+    materialPrice !== null &&
+    materialPrice >= 0 &&
+    (!selectedMaterial?.tracked || Number.isInteger(Number(materialQuantity)));
 
   function pickMaterialItem(value: string) {
     if (!value) {
@@ -232,43 +298,48 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
     setMTax(idx);
   }
 
-  function onAddTime() {
-    const minutes = Number(tMinutes);
-    const rate = parseMoney(tRate) ?? 0;
-    if (!Number.isInteger(minutes) || minutes <= 0 || !tDate) return;
+  async function onAddTime() {
+    if (!timeValid || hourlyRate === null) return;
     const t = taxOf(tTax);
-    addTime.mutate({
-      date: tDate,
-      minutes,
-      rate_minor: rate,
-      description: tDesc,
-      tax_rate_name: t.name,
-      tax_rate_bp: t.bp,
-      tax_inclusive: t.inc,
-    });
-    setTDesc("");
+    try {
+      await addTime.mutateAsync({
+        date: tDate,
+        minutes,
+        rate_minor: hourlyRate,
+        description: tDesc,
+        tax_rate_name: t.name,
+        tax_rate_bp: t.bp,
+        tax_inclusive: t.inc,
+      });
+      setTDesc("");
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
-  function onAddMaterial() {
-    if (!mDesc.trim()) return;
+  async function onAddMaterial() {
+    if (!materialValid || materialQuantity === null || materialPrice === null) return;
     const t = taxOf(mTax);
-    addMaterial.mutate({
-      item_id: mItem,
-      description: mDesc.trim(),
-      quantity: mQty || "1",
-      unit_price_minor: parseMoney(mPrice) ?? 0,
-      tax_rate_name: t.name,
-      tax_rate_bp: t.bp,
-      tax_inclusive: t.inc,
-    });
-    setMItem(null);
-    setMDesc("");
-    setMQty("1");
-    setMPrice("0.00");
+    try {
+      await addMaterial.mutateAsync({
+        item_id: mItem,
+        description: mDesc.trim(),
+        quantity: materialQuantity,
+        unit_price_minor: materialPrice,
+        tax_rate_name: t.name,
+        tax_rate_bp: t.bp,
+        tax_inclusive: t.inc,
+      });
+      setMItem(null);
+      setMDesc("");
+      setMQty("1");
+      setMPrice("0.00");
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
 
-  // Same 2dp-hours rounding the backend bills with — rows always reconcile to the totals.
-  const rowLabour = (rate: number, minutes: number) =>
-    Math.round(rate * (Math.round((minutes / 60) * 100) / 100));
+  // Bill from exact minutes; rounding displayed hours must never change the amount charged.
+  const rowLabour = (rate: number, minutes: number) => Math.round((rate * minutes) / 60);
 
   return (
     <div className="space-y-4">
@@ -291,12 +362,22 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                   id="job-status"
                   className="w-36"
                   value={job.status}
+                  disabled={setStatus.isPending}
                   onChange={(e) => setStatus.mutate(e.target.value)}
                 >
                   <option value="open">Open</option>
                   <option value="in_progress">In progress</option>
                   <option value="done">Done</option>
                 </Select>
+                {setStatus.isPending && (
+                  <span
+                    role="status"
+                    className="flex items-center gap-2 text-sm text-muted-foreground"
+                  >
+                    <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                    Updating…
+                  </span>
+                )}
               </>
             ) : (
               <JobStatusBadge status={job.status} />
@@ -326,12 +407,24 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                     <TableRow key={t.id}>
                       <TableCell>{t.date}</TableCell>
                       <TableCell>{t.description || "Labour"}</TableCell>
-                      <TableCell className="text-right tabular-nums">{(Math.round((t.minutes / 60) * 100) / 100).toFixed(2)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(t.rate_minor)}/h</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(rowLabour(t.rate_minor, t.minutes))}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {(Math.round((t.minutes / 60) * 100) / 100).toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(t.rate_minor)}/h
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(rowLabour(t.rate_minor, t.minutes))}
+                      </TableCell>
                       <TableCell className="text-right">
                         {!t.invoiced && (
-                          <Button variant="ghost" size="icon" onClick={() => delTime.mutate(t.id)} aria-label="Remove time entry">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => delTime.mutate(t.id)}
+                            loading={delTime.isPending && delTime.variables === t.id}
+                            aria-label="Remove time entry"
+                          >
                             <X className="size-4" />
                           </Button>
                         )}
@@ -344,20 +437,70 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
             {billable && (
               <div className="flex flex-wrap items-end gap-2">
                 <Field label="Date">
-                  {(p) => <Input {...p} type="date" className="w-40" value={tDate} onChange={(e) => setTDate(e.target.value)} />}
+                  {(p) => (
+                    <Input
+                      {...p}
+                      type="date"
+                      className="w-40"
+                      value={tDate}
+                      onChange={(e) => setTDate(e.target.value)}
+                    />
+                  )}
                 </Field>
-                <Field label="Minutes">
-                  {(p) => <Input {...p} inputMode="numeric" className="w-24" value={tMinutes} onChange={(e) => setTMinutes(e.target.value)} />}
+                <Field
+                  label="Minutes"
+                  error={
+                    tMinutes && (!Number.isInteger(minutes) || minutes <= 0)
+                      ? "Enter whole minutes above zero"
+                      : undefined
+                  }
+                >
+                  {(p) => (
+                    <Input
+                      {...p}
+                      inputMode="numeric"
+                      className="w-24"
+                      value={tMinutes}
+                      onChange={(e) => setTMinutes(e.target.value)}
+                    />
+                  )}
                 </Field>
-                <Field label="Rate/hour">
-                  {(p) => <Input {...p} inputMode="decimal" className="w-28" value={tRate} onChange={(e) => setTRate(e.target.value)} />}
+                <Field
+                  label="Rate/hour"
+                  error={
+                    tRate && (hourlyRate === null || hourlyRate < 0)
+                      ? "Enter a valid non-negative amount"
+                      : undefined
+                  }
+                >
+                  {(p) => (
+                    <Input
+                      {...p}
+                      inputMode="decimal"
+                      className="w-28"
+                      value={tRate}
+                      onChange={(e) => setTRate(e.target.value)}
+                    />
+                  )}
                 </Field>
                 <Field label="Description">
-                  {(p) => <Input {...p} className="w-48" value={tDesc} onChange={(e) => setTDesc(e.target.value)} />}
+                  {(p) => (
+                    <Input
+                      {...p}
+                      className="w-48"
+                      value={tDesc}
+                      onChange={(e) => setTDesc(e.target.value)}
+                    />
+                  )}
                 </Field>
                 <Field label="Tax">
                   {(p) => (
-                    <Select {...p} className="w-36" value={tTax} onChange={(e) => setTTax(Number(e.target.value))}>
+                    <Select
+                      {...p}
+                      className="w-36"
+                      value={tTax}
+                      onChange={(e) => setTTax(Number(e.target.value))}
+                    >
                       <option value={-1}>No Tax</option>
                       {taxes.map((t, idx) => (
                         <option key={t.id} value={idx}>
@@ -367,7 +510,13 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                     </Select>
                   )}
                 </Field>
-                <Button variant="outline" onClick={onAddTime}>
+                <Button
+                  variant="outline"
+                  onClick={onAddTime}
+                  disabled={!timeValid}
+                  loading={addTime.isPending}
+                  loadingLabel="Adding…"
+                >
                   <Plus className="size-4" /> Add time
                 </Button>
               </div>
@@ -395,13 +544,21 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                     <TableRow key={m.id}>
                       <TableCell>{m.description}</TableCell>
                       <TableCell className="text-right tabular-nums">{m.quantity}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(m.unit_price_minor)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(m.unit_price_minor)}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {money(Math.round(m.unit_price_minor * (Number(m.quantity) || 0)))}
                       </TableCell>
                       <TableCell className="text-right">
                         {!m.invoiced && (
-                          <Button variant="ghost" size="icon" onClick={() => delMaterial.mutate(m.id)} aria-label="Remove material">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => delMaterial.mutate(m.id)}
+                            loading={delMaterial.isPending && delMaterial.variables === m.id}
+                            aria-label="Remove material"
+                          >
                             <X className="size-4" />
                           </Button>
                         )}
@@ -415,7 +572,12 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
               <div className="flex flex-wrap items-end gap-2">
                 <Field label="Item" hint="Pick from the catalog to track stock">
                   {(p) => (
-                    <Select {...p} className="w-44" value={mItem ?? ""} onChange={(e) => pickMaterialItem(e.target.value)}>
+                    <Select
+                      {...p}
+                      className="w-44"
+                      value={mItem ?? ""}
+                      onChange={(e) => pickMaterialItem(e.target.value)}
+                    >
                       <option value="">Custom</option>
                       {items.map((it) => (
                         <option key={it.id} value={it.id}>
@@ -426,17 +588,63 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                   )}
                 </Field>
                 <Field label="Description">
-                  {(p) => <Input {...p} className="w-44" value={mDesc} onChange={(e) => setMDesc(e.target.value)} />}
+                  {(p) => (
+                    <Input
+                      {...p}
+                      className="w-44"
+                      value={mDesc}
+                      onChange={(e) => setMDesc(e.target.value)}
+                    />
+                  )}
                 </Field>
-                <Field label="Qty">
-                  {(p) => <Input {...p} inputMode="decimal" className="w-20" value={mQty} onChange={(e) => setMQty(e.target.value)} />}
+                <Field
+                  label="Qty"
+                  error={
+                    mQty && materialQuantity === null
+                      ? "Enter a quantity above zero"
+                      : selectedMaterial?.tracked &&
+                          materialQuantity !== null &&
+                          !Number.isInteger(Number(materialQuantity))
+                        ? "Tracked products need a whole quantity"
+                        : undefined
+                  }
+                >
+                  {(p) => (
+                    <Input
+                      {...p}
+                      inputMode="decimal"
+                      className="w-20"
+                      value={mQty}
+                      onChange={(e) => setMQty(e.target.value)}
+                    />
+                  )}
                 </Field>
-                <Field label="Price">
-                  {(p) => <Input {...p} inputMode="decimal" className="w-28" value={mPrice} onChange={(e) => setMPrice(e.target.value)} />}
+                <Field
+                  label="Price"
+                  error={
+                    mPrice && (materialPrice === null || materialPrice < 0)
+                      ? "Enter a valid non-negative amount"
+                      : undefined
+                  }
+                >
+                  {(p) => (
+                    <Input
+                      {...p}
+                      inputMode="decimal"
+                      className="w-28"
+                      value={mPrice}
+                      onChange={(e) => setMPrice(e.target.value)}
+                    />
+                  )}
                 </Field>
                 <Field label="Tax">
                   {(p) => (
-                    <Select {...p} className="w-36" value={mTax} onChange={(e) => setMTax(Number(e.target.value))}>
+                    <Select
+                      {...p}
+                      className="w-36"
+                      value={mTax}
+                      onChange={(e) => setMTax(Number(e.target.value))}
+                    >
                       <option value={-1}>No Tax</option>
                       {taxes.map((t, idx) => (
                         <option key={t.id} value={idx}>
@@ -446,7 +654,13 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
                     </Select>
                   )}
                 </Field>
-                <Button variant="outline" onClick={onAddMaterial}>
+                <Button
+                  variant="outline"
+                  onClick={onAddMaterial}
+                  disabled={!materialValid}
+                  loading={addMaterial.isPending}
+                  loadingLabel="Adding…"
+                >
                   <Plus className="size-4" /> Add material
                 </Button>
               </div>
@@ -460,12 +674,19 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-            <Button onClick={() => setConfirm("invoice")} disabled={invoiceJob.isPending || !billable}>
+            <Button
+              onClick={() => setConfirm("invoice")}
+              disabled={!billable || !hasUnbilled}
+              loading={invoiceJob.isPending}
+              loadingLabel="Creating invoice…"
+            >
               {billable ? "Create invoice from job" : "Invoiced"}
             </Button>
-            <Button variant="ghost" onClick={() => setConfirm("delete")}>
-              <Trash2 className="size-4" /> Delete job
-            </Button>
+            {billable && time_entries.length === 0 && materials.length === 0 && (
+              <Button variant="ghost" onClick={() => setConfirm("delete")}>
+                <Trash2 className="size-4" /> Delete job
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -474,8 +695,12 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
         open={confirm === "invoice"}
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
-          await invoiceJob.mutateAsync(undefined);
-          setConfirm(null);
+          try {
+            await invoiceJob.mutateAsync(undefined);
+            setConfirm(null);
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Invoice this job?"
         description="Un-invoiced time and materials become a draft invoice and are marked billed. You can still review the draft before issuing."
@@ -486,11 +711,15 @@ function JobDetailView({ id, onDeleted }: { id: number; onDeleted: () => void })
         open={confirm === "delete"}
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
-          await deleteJob.mutateAsync(undefined);
-          onDeleted();
+          try {
+            await deleteJob.mutateAsync(undefined);
+            onDeleted();
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Delete this job?"
-        description="The job is removed from your lists. Any invoice already created from it is unaffected."
+        description="Only an empty, unbilled job can be deleted. Invoiced jobs remain part of the financial record."
         confirmLabel="Delete job"
         destructive
         pending={deleteJob.isPending}

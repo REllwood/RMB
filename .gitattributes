@@ -1,0 +1,2 @@
+# sqlx checksums migrations byte-for-byte, so line endings must never change between platforms.
+*.sql text eol=lf

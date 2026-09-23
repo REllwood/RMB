@@ -81,10 +81,16 @@ export function CatalogPage() {
   }
   async function onSubmit() {
     if (!draft || !draft.input.name.trim()) return;
-    const input: ItemInput = { ...draft.input, default_price_minor: parseMoney(draft.price) ?? 0 };
-    if (draft.id === null) await createMut.mutateAsync(input);
-    else await updateMut.mutateAsync({ id: draft.id, input });
-    setDraft(null);
+    const price = parseMoney(draft.price);
+    if (price === null || price < 0) return;
+    const input: ItemInput = { ...draft.input, default_price_minor: price };
+    try {
+      if (draft.id === null) await createMut.mutateAsync(input);
+      else await updateMut.mutateAsync({ id: draft.id, input });
+      setDraft(null);
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
   function field<K extends keyof ItemInput>(key: K, value: ItemInput[K]) {
     setDraft((d) => (d ? { ...d, input: { ...d.input, [key]: value } } : d));
@@ -107,22 +113,67 @@ export function CatalogPage() {
           <CardContent className="grid gap-4 pt-6 sm:grid-cols-2">
             <Field label="Type">
               {(p) => (
-                <Select {...p} value={draft.input.kind} onChange={(e) => field("kind", e.target.value)}>
+                <Select
+                  {...p}
+                  value={draft.input.kind}
+                  onChange={(e) => {
+                    const kind = e.target.value;
+                    setDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            input: {
+                              ...current.input,
+                              kind,
+                              tracked: kind === "product",
+                              reorder_point:
+                                kind === "product" ? current.input.reorder_point : null,
+                            },
+                          }
+                        : current,
+                    );
+                  }}
+                >
                   <option value="product">Product (tracked stock)</option>
                   <option value="service">Service</option>
                 </Select>
               )}
             </Field>
             <Field label="Name" required>
-              {(p) => <Input {...p} value={draft.input.name} onChange={(e) => field("name", e.target.value)} />}
+              {(p) => (
+                <Input
+                  {...p}
+                  value={draft.input.name}
+                  onChange={(e) => field("name", e.target.value)}
+                />
+              )}
             </Field>
             <Field label="SKU">
-              {(p) => <Input {...p} value={draft.input.sku} onChange={(e) => field("sku", e.target.value)} />}
+              {(p) => (
+                <Input
+                  {...p}
+                  value={draft.input.sku}
+                  onChange={(e) => field("sku", e.target.value)}
+                />
+              )}
             </Field>
             <Field label="Unit">
-              {(p) => <Input {...p} value={draft.input.unit} onChange={(e) => field("unit", e.target.value)} />}
+              {(p) => (
+                <Input
+                  {...p}
+                  value={draft.input.unit}
+                  onChange={(e) => field("unit", e.target.value)}
+                />
+              )}
             </Field>
-            <Field label="Default price">
+            <Field
+              label="Default price"
+              error={
+                parseMoney(draft.price) === null || (parseMoney(draft.price) ?? -1) < 0
+                  ? "Enter a valid non-negative amount with no more than two decimal places"
+                  : undefined
+              }
+            >
               {(p) => (
                 <Input
                   {...p}
@@ -137,7 +188,9 @@ export function CatalogPage() {
                 <Select
                   {...p}
                   value={draft.input.default_tax_rate_id ?? ""}
-                  onChange={(e) => field("default_tax_rate_id", e.target.value ? Number(e.target.value) : null)}
+                  onChange={(e) =>
+                    field("default_tax_rate_id", e.target.value ? Number(e.target.value) : null)
+                  }
                 >
                   <option value="">— None —</option>
                   {taxQ.data?.map((r) => (
@@ -155,13 +208,25 @@ export function CatalogPage() {
                     {...p}
                     inputMode="numeric"
                     value={draft.input.reorder_point ?? ""}
-                    onChange={(e) => field("reorder_point", e.target.value ? Number(e.target.value) : null)}
+                    onChange={(e) =>
+                      field("reorder_point", e.target.value ? Number(e.target.value) : null)
+                    }
                   />
                 )}
               </Field>
             )}
             <div className="flex gap-2 sm:col-span-2">
-              <Button onClick={onSubmit} disabled={!draft.input.name.trim()}>
+              <Button
+                onClick={onSubmit}
+                disabled={
+                  !draft.input.name.trim() ||
+                  !draft.input.unit.trim() ||
+                  parseMoney(draft.price) === null ||
+                  (parseMoney(draft.price) ?? -1) < 0
+                }
+                loading={createMut.isPending || updateMut.isPending}
+                loadingLabel="Saving…"
+              >
                 {draft.id === null ? "Create" : "Save"}
               </Button>
               <Button variant="ghost" onClick={() => setDraft(null)}>
@@ -214,12 +279,15 @@ export function CatalogPage() {
             </TableHeader>
             <TableBody>
               {listQ.data?.map((it) => {
-                const low = it.tracked && it.reorder_point !== null && it.qty_on_hand <= it.reorder_point;
+                const low =
+                  it.tracked && it.reorder_point !== null && it.qty_on_hand <= it.reorder_point;
                 return (
                   <TableRow key={it.id}>
                     <TableCell className="pl-4 font-medium">{it.name}</TableCell>
                     <TableCell>{it.kind === "product" ? "Product" : "Service"}</TableCell>
-                    <TableCell className="text-right tabular-nums">{money(it.default_price_minor)}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {money(it.default_price_minor)}
+                    </TableCell>
                     <TableCell>
                       {it.tracked ? (
                         <span className="flex items-center gap-2">
@@ -257,8 +325,12 @@ export function CatalogPage() {
           pending={adjustMut.isPending}
           onClose={() => setAdjusting(null)}
           onSubmit={async (delta, note) => {
-            await adjustMut.mutateAsync({ id: adjusting.id, delta, note });
-            setAdjusting(null);
+            try {
+              await adjustMut.mutateAsync({ id: adjusting.id, delta, note });
+              setAdjusting(null);
+            } catch {
+              // useIpcMutation has already shown the backend error.
+            }
           }}
         />
       )}
@@ -267,11 +339,16 @@ export function CatalogPage() {
         open={deleting !== null}
         onClose={() => setDeleting(null)}
         onConfirm={async () => {
-          if (deleting) await deleteMut.mutateAsync(deleting.id);
-          setDeleting(null);
+          if (!deleting) return;
+          try {
+            await deleteMut.mutateAsync(deleting.id);
+            setDeleting(null);
+          } catch {
+            // Keep the confirmation open so the user can act on the backend explanation.
+          }
         }}
         title={`Delete ${deleting?.name ?? "item"}?`}
-        description="Existing documents keep their lines; the item just leaves the catalog."
+        description="The item must have zero stock and no active draft work. Existing completed documents keep their line snapshots."
         confirmLabel="Delete item"
         destructive
         pending={deleteMut.isPending}
@@ -307,15 +384,27 @@ function AdjustStockDialog({
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={!valid || pending} onClick={() => valid && onSubmit(parsed, note)}>
-            {pending ? "Saving…" : "Adjust stock"}
+          <Button
+            disabled={!valid}
+            loading={pending}
+            loadingLabel="Saving…"
+            onClick={() => valid && onSubmit(parsed, note)}
+          >
+            Adjust stock
           </Button>
         </>
       }
     >
       <div className="grid gap-4">
         <Field label="Change" hint="e.g. 10 received, or -3 damaged" required>
-          {(p) => <Input {...p} inputMode="numeric" value={delta} onChange={(e) => setDelta(e.target.value)} />}
+          {(p) => (
+            <Input
+              {...p}
+              inputMode="numeric"
+              value={delta}
+              onChange={(e) => setDelta(e.target.value)}
+            />
+          )}
         </Field>
         <Field label="Note">
           {(p) => <Input {...p} value={note} onChange={(e) => setNote(e.target.value)} />}

@@ -8,13 +8,16 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc --noEmit && eslint . && vitest run && vite build"
+    "test:coverage": "vitest run --coverage",
+    "version:check": "node scripts/check-versions.mjs",
+    "ipc:check": "node scripts/check-ipc-surface.mjs",
+    "check": "npm run version:check && npm run ipc:check && tsc --noEmit && npm run lint && vitest run && vite build"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
@@ -39,7 +42,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.0.2",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.11",
     "axe-core": "^4.12.0",
     "culori": "^4.0.2",
     "eslint": "^10.4.1",
@@ -53,6 +56,6 @@
     "typescript": "~5.9.0",
     "typescript-eslint": "^8.60.1",
     "vite": "^8.0.16",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
   }
 }

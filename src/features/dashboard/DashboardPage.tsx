@@ -30,7 +30,9 @@ function Stat({
       <CardContent className="flex items-start justify-between gap-3 pt-6">
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-1 truncate text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
+          <p className="mt-1 truncate text-2xl font-semibold tracking-tight tabular-nums">
+            {value}
+          </p>
         </div>
         <div
           className={cn(
@@ -53,6 +55,7 @@ export function DashboardPage() {
   const q = useIpcQuery(["dashboard"], () => ipc.dashboardSummary());
   const recentQ = useIpcQuery(["invoices"], () => ipc.listInvoices());
   const settingsQ = useIpcQuery(["settings"], () => ipc.getSettings());
+  const warningQ = useIpcQuery(["startup-warning"], () => ipc.getMeta("startup.warning"));
 
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -64,6 +67,20 @@ export function DashboardPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Dashboard" description="Where the business stands right now." />
+
+      {warningQ.data?.trim() && (
+        <Card className="border-warning/60 bg-card">
+          <CardContent className="flex items-start gap-3 pt-6">
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-foreground" aria-hidden />
+            <div>
+              <p className="font-medium">Action needed</p>
+              <p className="mt-1 whitespace-pre-line text-sm text-muted-foreground">
+                {warningQ.data}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {needsSetup && (
         <Card className="border-primary/30 bg-primary/5">
@@ -84,8 +101,13 @@ export function DashboardPage() {
       )}
 
       {s && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <Stat label="Money owed to you" value={money(s.outstanding_minor)} icon={Banknote} tone="primary" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <Stat
+            label="Money owed to you"
+            value={money(s.outstanding_minor)}
+            icon={Banknote}
+            tone="primary"
+          />
           <Stat
             label="Overdue"
             value={String(s.overdue_count)}
@@ -146,7 +168,12 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      {!s && <EmptyState title="No data yet" description="Add customers, items, and invoices to see your numbers." />}
+      {!s && (
+        <EmptyState
+          title="No data yet"
+          description="Add customers, items, and invoices to see your numbers."
+        />
+      )}
     </div>
   );
 }

@@ -118,6 +118,9 @@ export interface InvoiceDetail {
   invoice: InvoiceRow;
   lines: InvoiceLineRow[];
   amount_paid_minor: number;
+  business_snapshot: string | null;
+  customer_snapshot: string | null;
+  tax_summary: string;
 }
 
 export interface Payment {
@@ -163,6 +166,7 @@ export type QuoteLineRow = InvoiceLineRow;
 export interface QuoteDetail {
   quote: QuoteRow;
   lines: QuoteLineRow[];
+  tax_summary: string;
 }
 
 export interface Job {
@@ -246,6 +250,7 @@ export interface RecurringInvoice {
   next_date: string;
   end_date: string | null;
   due_days: number | null;
+  anchor_day: number;
   notes: string;
   active: boolean;
   created_at: string;

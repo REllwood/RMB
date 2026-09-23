@@ -30,9 +30,15 @@ dist-ssr
 /test-results
 /playwright-report
 /e2e/.cache
+/coverage
 
-# Local notes and scratch work — never part of the app
+# Local notes, planning and agent artefacts — never part of the app
 /notes/
 /scratch/
+/docs/
+/.forge/
+/.claude/
+/.agents/
+/.planning/
 
 # NOTE: proptest-regressions/ is intentionally NOT ignored (commit shrunk counterexamples).

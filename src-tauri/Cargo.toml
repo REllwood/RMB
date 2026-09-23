@@ -13,18 +13,19 @@ name = "rmb_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.2"
 rmb-domain = { path = "../crates/rmb-domain" }
 rmb-data = { path = "../crates/rmb-data" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # PDF generation (offline, byte-identical) via Typst, using its embedded default fonts.
-typst = "=0.14.2"
-typst-pdf = "=0.14.2"
-typst-as-lib = "=0.15.5"
-typst-assets = { version = "0.14", features = ["fonts"] }
+typst = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-as-lib = "=0.16.0"
+typst-assets = { version = "0.15.1", features = ["fonts"] }

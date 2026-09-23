@@ -12,6 +12,7 @@ import { ConfirmDialog } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -23,7 +24,13 @@ import {
 } from "@/components/ui/table";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
 import { LineEditor } from "@/features/shared/LineEditor";
-import { emptyLine, fromRows, toLineInputs, type EditLine } from "@/features/shared/lines";
+import {
+  emptyLine,
+  fromRows,
+  toLineInputs,
+  validateEditLines,
+  type EditLine,
+} from "@/features/shared/lines";
 import { todayLocalISO } from "@/lib/format";
 
 const FREQUENCIES: [string, string][] = [
@@ -42,19 +49,33 @@ export function RecurringView() {
   return (
     <div className="space-y-4">
       {mode.kind === "list" && (
-        <ScheduleList onCreate={() => setMode({ kind: "create" })} onEdit={(id) => setMode({ kind: "edit", id })} />
+        <ScheduleList
+          onCreate={() => setMode({ kind: "create" })}
+          onEdit={(id) => setMode({ kind: "edit", id })}
+        />
       )}
       {mode.kind === "create" && <ScheduleForm onDone={() => setMode({ kind: "list" })} />}
-      {mode.kind === "edit" && <ScheduleEdit id={mode.id} onDone={() => setMode({ kind: "list" })} />}
+      {mode.kind === "edit" && (
+        <ScheduleEdit id={mode.id} onDone={() => setMode({ kind: "list" })} />
+      )}
     </div>
   );
 }
 
-function ScheduleList({ onCreate, onEdit }: { onCreate: () => void; onEdit: (id: number) => void }) {
+function ScheduleList({
+  onCreate,
+  onEdit,
+}: {
+  onCreate: () => void;
+  onEdit: (id: number) => void;
+}) {
   const money = useMoneyFormat();
   const toast = useToast();
   const namesQ = useIpcQuery(["customers", ""], () => ipc.listCustomers());
-  const names = useMemo(() => new Map((namesQ.data ?? []).map((c) => [c.id, c.name])), [namesQ.data]);
+  const names = useMemo(
+    () => new Map((namesQ.data ?? []).map((c) => [c.id, c.name])),
+    [namesQ.data],
+  );
   const q = useIpcQuery(["recurring"], () => ipc.listRecurring());
   const toggle = useIpcMutation(
     (v: { id: number; active: boolean }) => ipc.setRecurringActive(v.id, v.active),
@@ -63,16 +84,32 @@ function ScheduleList({ onCreate, onEdit }: { onCreate: () => void; onEdit: (id:
   const del = useIpcMutation((id: number) => ipc.deleteRecurring(id), [["recurring"]], {
     successMessage: "Schedule deleted",
   });
-  const runNow = useIpcMutation(() => ipc.runRecurringNow(), [["recurring"], ["invoices"], ["dashboard"]]);
+  const runNow = useIpcMutation(
+    () => ipc.runRecurringNow(),
+    [["recurring"], ["invoices"], ["dashboard"]],
+  );
   const [deleting, setDeleting] = useState<number | null>(null);
 
   async function onRunNow() {
-    const count = await runNow.mutateAsync(undefined);
-    toast("success", count > 0 ? `Created ${count} draft invoice${count === 1 ? "" : "s"}` : "Nothing due — all schedules are up to date");
+    try {
+      const count = await runNow.mutateAsync(undefined);
+      toast(
+        "success",
+        count > 0
+          ? `Created ${count} draft invoice${count === 1 ? "" : "s"}`
+          : "Nothing due — all schedules are up to date",
+      );
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
 
-  if (q.isLoading) return <Loading />;
-  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
+  if (q.isLoading || namesQ.isLoading) return <Loading />;
+  const loadError = q.error ?? namesQ.error;
+  if (loadError)
+    return (
+      <ErrorState error={loadError} onRetry={() => Promise.all([q.refetch(), namesQ.refetch()])} />
+    );
 
   return (
     <Card>
@@ -80,11 +117,17 @@ function ScheduleList({ onCreate, onEdit }: { onCreate: () => void; onEdit: (id:
         <div>
           <CardTitle className="text-base">Recurring schedules</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            Due schedules become draft invoices automatically when the app starts — you still review and issue them.
+            Due schedules become draft invoices automatically when the app starts — you still review
+            and issue them.
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={onRunNow} disabled={runNow.isPending}>
+          <Button
+            variant="outline"
+            onClick={onRunNow}
+            loading={runNow.isPending}
+            loadingLabel="Generating…"
+          >
             <RefreshCw className="size-4" /> Generate due now
           </Button>
           <Button onClick={onCreate}>
@@ -125,13 +168,17 @@ function ScheduleList({ onCreate, onEdit }: { onCreate: () => void; onEdit: (id:
                   <TableCell className="text-muted-foreground">{r.next_date}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(r.total_minor)}</TableCell>
                   <TableCell>
-                    <Badge variant={r.active ? "success" : "outline"}>{r.active ? "active" : "paused"}</Badge>
+                    <Badge variant={r.active ? "success" : "outline"}>
+                      {r.active ? "active" : "paused"}
+                    </Badge>
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => toggle.mutate({ id: r.id, active: !r.active })}
+                      loading={toggle.isPending && toggle.variables?.id === r.id}
+                      loadingLabel={r.active ? "Pausing…" : "Resuming…"}
                       aria-label={r.active ? "Pause schedule" : "Resume schedule"}
                     >
                       {r.active ? <Pause className="size-4" /> : <Play className="size-4" />}
@@ -155,8 +202,13 @@ function ScheduleList({ onCreate, onEdit }: { onCreate: () => void; onEdit: (id:
         open={deleting !== null}
         onClose={() => setDeleting(null)}
         onConfirm={async () => {
-          if (deleting !== null) await del.mutateAsync(deleting);
-          setDeleting(null);
+          if (deleting === null) return;
+          try {
+            await del.mutateAsync(deleting);
+            setDeleting(null);
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Delete this schedule?"
         description="Already-generated invoices are kept; only the schedule stops."
@@ -206,41 +258,71 @@ function ScheduleForm({
   );
 
   if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading) return <Loading />;
+  const loadError = customersQ.error ?? taxQ.error ?? itemsQ.error;
+  if (loadError)
+    return (
+      <ErrorState
+        error={loadError}
+        onRetry={() => Promise.all([customersQ.refetch(), taxQ.refetch(), itemsQ.refetch()])}
+      />
+    );
   if (customersQ.data && customersQ.data.length === 0)
-    return <EmptyState title="Add a customer first" description="Schedules belong to a customer." />;
+    return (
+      <EmptyState title="Add a customer first" description="Schedules belong to a customer." />
+    );
 
   const taxes = taxQ.data ?? [];
+  const items = itemsQ.data ?? [];
   const lines = edited ?? [emptyLine(taxes)];
+  const lineIssues = validateEditLines(lines, items);
+  const hasLineIssues = lineIssues.some(
+    (issue) => issue.description || issue.quantity || issue.price,
+  );
   const payload = toLineInputs(lines);
-  const valid = customerId !== null && payload.length > 0 && nextDate !== "";
+  const parsedDueDays = dueDays.trim() === "" ? null : Number(dueDays);
+  const dueDaysValid =
+    parsedDueDays === null ||
+    (Number.isInteger(parsedDueDays) && parsedDueDays >= 0 && parsedDueDays <= 3_650);
+  const datesValid = Boolean(nextDate) && (!endDate || endDate >= nextDate);
+  const valid =
+    customerId !== null && payload.length > 0 && datesValid && dueDaysValid && !hasLineIssues;
 
   async function onSave() {
     if (!valid || customerId === null) return;
-    const days = dueDays.trim() === "" ? null : Number(dueDays);
-    await save.mutateAsync({
-      input: {
-        customer_id: customerId,
-        frequency,
-        next_date: nextDate,
-        end_date: endDate || null,
-        due_days: days !== null && Number.isInteger(days) && days >= 0 ? days : null,
-        notes,
-      },
-      lines: payload,
-    });
-    onDone();
+    try {
+      await save.mutateAsync({
+        input: {
+          customer_id: customerId,
+          frequency,
+          next_date: nextDate,
+          end_date: endDate || null,
+          due_days: parsedDueDays,
+          notes,
+        },
+        lines: payload,
+      });
+      onDone();
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">{initial ? "Edit schedule" : "New recurring schedule"}</CardTitle>
+        <CardTitle className="text-base">
+          {initial ? "Edit schedule" : "New recurring schedule"}
+        </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid max-w-3xl gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Customer" required>
             {(p) => (
-              <Select {...p} value={customerId ?? ""} onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}>
+              <Select
+                {...p}
+                value={customerId ?? ""}
+                onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
+              >
                 <option value="" disabled>
                   Choose a customer…
                 </option>
@@ -263,25 +345,72 @@ function ScheduleForm({
               </Select>
             )}
           </Field>
-          <Field label="Next invoice date" required hint="Days 1–28 keep monthly dates stable">
-            {(p) => <Input {...p} type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />}
+          <Field
+            label="Next invoice date"
+            required
+            hint="Month-end schedules stay anchored to month end"
+          >
+            {(p) => (
+              <Input
+                {...p}
+                type="date"
+                value={nextDate}
+                onChange={(e) => setNextDate(e.target.value)}
+              />
+            )}
           </Field>
-          <Field label="End date" hint="Optional — stops after this date">
-            {(p) => <Input {...p} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />}
+          <Field
+            label="End date"
+            hint="Optional — stops after this date"
+            error={
+              endDate && endDate < nextDate ? "End date cannot be before the next date" : undefined
+            }
+          >
+            {(p) => (
+              <Input
+                {...p}
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+              />
+            )}
           </Field>
-          <Field label="Due in (days)" hint="Blank for no due date">
-            {(p) => <Input {...p} inputMode="numeric" value={dueDays} onChange={(e) => setDueDays(e.target.value)} />}
+          <Field
+            label="Due in (days)"
+            hint="Blank for no due date"
+            error={!dueDaysValid ? "Enter a whole number from 0 to 3,650" : undefined}
+          >
+            {(p) => (
+              <Input
+                {...p}
+                inputMode="numeric"
+                value={dueDays}
+                onChange={(e) => setDueDays(e.target.value)}
+              />
+            )}
           </Field>
           <Field label="Notes">
-            {(p) => <Input {...p} value={notes} onChange={(e) => setNotes(e.target.value)} />}
+            {(p) => <Textarea {...p} value={notes} onChange={(e) => setNotes(e.target.value)} />}
           </Field>
         </div>
 
-        <LineEditor lines={lines} onChange={setEdited} taxes={taxes} items={itemsQ.data ?? []} idPrefix="rec" />
+        <LineEditor
+          lines={lines}
+          onChange={setEdited}
+          taxes={taxes}
+          items={items}
+          idPrefix="rec"
+          issues={lineIssues}
+        />
 
         <div className="flex gap-2">
-          <Button onClick={onSave} disabled={!valid || save.isPending}>
-            {save.isPending ? "Saving…" : initial ? "Save changes" : "Create schedule"}
+          <Button
+            onClick={onSave}
+            disabled={!valid}
+            loading={save.isPending}
+            loadingLabel="Saving…"
+          >
+            {initial ? "Save changes" : "Create schedule"}
           </Button>
           <Button variant="ghost" onClick={onDone}>
             Cancel

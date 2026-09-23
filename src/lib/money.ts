@@ -4,21 +4,67 @@ import { useIpcQuery } from "@/lib/useIpc";
 
 /** Parse a user-entered major-unit amount (e.g. "12.50") into integer minor units. */
 export function parseMoney(input: string, scale = 2): number | null {
-  let s = input.trim().replace(/\s/g, "");
-  if (s.includes(",") && s.includes(".")) {
-    // Both separators present → treat "," as the thousands separator.
-    s = s.replace(/,/g, "");
-  } else if (s.includes(",")) {
-    const oneComma = s.indexOf(",") === s.lastIndexOf(",");
-    const decimals = s.slice(s.lastIndexOf(",") + 1).length;
-    // A single comma followed by 1–2 digits is a decimal comma ("1,50"); otherwise thousands.
-    s = oneComma && decimals <= 2 ? s.replace(",", ".") : s.replace(/,/g, "");
+  if (!Number.isInteger(scale) || scale < 0 || scale > 6) return null;
+  let source = input.trim().replace(/\s/g, "");
+  if (!/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[.,]\d+)*$/.test(source)) return null;
+
+  let sign = "";
+  if (source.startsWith("-") || source.startsWith("+")) {
+    sign = source[0] === "-" ? "-" : "";
+    source = source.slice(1);
   }
-  s = s.replace(/[^0-9.-]/g, "");
-  if (s === "" || s === "-" || s === ".") return null;
-  const value = Number(s);
-  if (!Number.isFinite(value)) return null;
-  return Math.round(value * 10 ** scale);
+
+  const commaCount = (source.match(/,/g) ?? []).length;
+  const dotCount = (source.match(/\./g) ?? []).length;
+  let integerPart = source;
+  let fractionalPart = "";
+
+  if (commaCount > 0 && dotCount > 0) {
+    const decimal = source.lastIndexOf(",") > source.lastIndexOf(".") ? "," : ".";
+    const thousands = decimal === "," ? "." : ",";
+    if (source.split(decimal).length !== 2) return null;
+    const [groupedInteger, fraction] = source.split(decimal);
+    const groups = groupedInteger.split(thousands);
+    if (
+      groups.some((group) => !/^\d+$/.test(group)) ||
+      (groups.length > 1 &&
+        (groups[0].length < 1 ||
+          groups[0].length > 3 ||
+          groups.slice(1).some((g) => g.length !== 3)))
+    ) {
+      return null;
+    }
+    integerPart = groups.join("");
+    fractionalPart = fraction;
+  } else {
+    const separator = commaCount > 0 ? "," : dotCount > 0 ? "." : null;
+    if (separator) {
+      const parts = source.split(separator);
+      if (parts.length === 2 && parts[1].length <= scale) {
+        integerPart = parts[0] || "0";
+        fractionalPart = parts[1];
+      } else if (
+        parts.length > 1 &&
+        parts[0].length >= 1 &&
+        parts[0].length <= 3 &&
+        parts.every((part, index) => index === 0 || part.length === 3)
+      ) {
+        integerPart = parts.join("");
+      } else {
+        return null;
+      }
+    }
+  }
+
+  if (!/^\d+$/.test(integerPart) || !/^\d*$/.test(fractionalPart)) return null;
+  if (fractionalPart.length > scale) return null;
+  const paddedFraction = fractionalPart.padEnd(scale, "0");
+  const magnitude = BigInt(integerPart) * 10n ** BigInt(scale) + BigInt(paddedFraction || "0");
+  const signed = sign === "-" ? -magnitude : magnitude;
+  if (signed > BigInt(Number.MAX_SAFE_INTEGER) || signed < BigInt(Number.MIN_SAFE_INTEGER)) {
+    return null;
+  }
+  return Number(signed);
 }
 
 /** Render integer minor units as a plain major-unit string for an editable input (e.g. "12.50"). */

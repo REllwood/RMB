@@ -5,14 +5,13 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * RMB design tokens. shadcn/ui neutral base + a calm BLUE primary and a reserved
- * AMBER brand accent (used sparingly for emphasis, not for component hover states).
- * Refined further in Phase G; all values are accessible (≥4.5:1 text) in light & dark.
+ * RMB design tokens: quiet neutral surfaces, a restrained blue primary, and amber used only
+ * for warnings or highlights. Text pairings are verified by the token contrast test.
  */
 :root {
   --radius: 0.625rem;
 
-  --background: oklch(1 0 0);
+  --background: oklch(0.982 0.005 255);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
@@ -26,7 +25,7 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: oklch(0.55 0 0);
 
   /* Neutral hover/active surface (shadcn semantics — NOT the brand accent) */
   --accent: oklch(0.97 0 0);
@@ -41,15 +40,15 @@
   --success: oklch(0.5 0.14 150); /* dark enough for white text (WCAG AA) */
   --warning: oklch(0.769 0.156 70.08);
 
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
+  --border: oklch(0.9 0.008 255);
+  --input: oklch(0.89 0.008 255);
   --ring: oklch(0.546 0.182 256);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  --background: oklch(0.135 0.008 255);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.19 0.008 255);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
@@ -130,6 +129,7 @@
       Roboto,
       sans-serif;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
   /* Respect reduced-motion globally (covers tw-animate-css keyframes too). */

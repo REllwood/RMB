@@ -8,7 +8,7 @@ const TEMPLATE: &str = include_str!("../assets/templates/document.typ");
 
 /// Render the document template to PDF bytes. `logo` is optional raster bytes + Typst format
 /// name ("png" / "jpg") for the business logo in the header.
-pub fn render(json_data: &str, logo: Option<(Vec<u8>, &str)>) -> Result<Vec<u8>, String> {
+pub fn render(json_data: &str, logo: Option<(Vec<u8>, String)>) -> Result<Vec<u8>, String> {
     let engine = TypstEngine::builder()
         .main_file(TEMPLATE)
         .fonts(typst_assets::fonts())
@@ -87,7 +87,8 @@ mod tests {
 
         // With a logo: still a valid PDF, and bigger than the unbranded one (image embedded).
         let logo = include_bytes!("../assets/test-logo.png").to_vec();
-        let branded = render(&data, Some((logo, "png"))).expect("logo render should succeed");
+        let branded =
+            render(&data, Some((logo, "png".into()))).expect("logo render should succeed");
         assert!(branded.starts_with(b"%PDF"));
         assert!(branded.len() > pdf.len(), "logo should add content");
     }

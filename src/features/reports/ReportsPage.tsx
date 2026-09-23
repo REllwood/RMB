@@ -58,30 +58,46 @@ export function ReportsPage() {
   const [preset, setPreset] = useState<Preset>("this-year");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [exporting, setExporting] = useState<"invoices" | "payments" | "customers" | null>(null);
 
   const range =
-    preset === "custom"
-      ? { from: customFrom || null, to: customTo || null }
-      : presetRange(preset);
+    preset === "custom" ? { from: customFrom || null, to: customTo || null } : presetRange(preset);
   const key = [range.from, range.to];
+  const rangeValid = !range.from || !range.to || range.from <= range.to;
 
-  const taxQ = useIpcQuery(["report-tax", ...key], () => ipc.reportTaxSummary(range.from, range.to));
-  const monthQ = useIpcQuery(["report-month", ...key], () => ipc.reportSalesMonthly(range.from, range.to));
-  const custQ = useIpcQuery(["report-cust", ...key], () => ipc.reportSalesCustomers(range.from, range.to));
+  const taxQ = useIpcQuery(
+    ["report-tax", ...key],
+    () => ipc.reportTaxSummary(range.from, range.to),
+    rangeValid,
+  );
+  const monthQ = useIpcQuery(
+    ["report-month", ...key],
+    () => ipc.reportSalesMonthly(range.from, range.to),
+    rangeValid,
+  );
+  const custQ = useIpcQuery(
+    ["report-cust", ...key],
+    () => ipc.reportSalesCustomers(range.from, range.to),
+    rangeValid,
+  );
 
   async function exportCsv(kind: "invoices" | "payments" | "customers") {
-    const path = await save({
-      defaultPath: `rmb-${kind}${range.from ? `-${range.from}-to-${range.to ?? "now"}` : ""}.csv`,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!path) return;
+    if (kind !== "customers" && !rangeValid) return;
+    setExporting(kind);
     try {
+      const path = await save({
+        defaultPath: `rmb-${kind}${range.from ? `-${range.from}-to-${range.to ?? "now"}` : ""}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (!path) return;
       if (kind === "invoices") await ipc.exportInvoicesCsv(path, range.from, range.to);
       else if (kind === "payments") await ipc.exportPaymentsCsv(path, range.from, range.to);
       else await ipc.exportCustomersCsv(path);
       toast("success", `Exported ${kind} CSV`);
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(null);
     }
   }
 
@@ -104,7 +120,12 @@ export function ReportsPage() {
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Period">
           {(p) => (
-            <Select {...p} className="w-44" value={preset} onChange={(e) => setPreset(e.target.value as Preset)}>
+            <Select
+              {...p}
+              className="w-44"
+              value={preset}
+              onChange={(e) => setPreset(e.target.value as Preset)}
+            >
               <option value="this-month">This month</option>
               <option value="last-month">Last month</option>
               <option value="this-year">This year</option>
@@ -116,10 +137,29 @@ export function ReportsPage() {
         {preset === "custom" && (
           <>
             <Field label="From">
-              {(p) => <Input {...p} type="date" className="w-40" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />}
+              {(p) => (
+                <Input
+                  {...p}
+                  type="date"
+                  className="w-40"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                />
+              )}
             </Field>
-            <Field label="To">
-              {(p) => <Input {...p} type="date" className="w-40" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />}
+            <Field
+              label="To"
+              error={!rangeValid ? "End date cannot be before the start date" : undefined}
+            >
+              {(p) => (
+                <Input
+                  {...p}
+                  type="date"
+                  className="w-40"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                />
+              )}
             </Field>
           </>
         )}
@@ -128,7 +168,10 @@ export function ReportsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Tax collected</CardTitle>
-          <CardDescription>Per rate, from line-level snapshots — your BAS / VAT-return numbers.</CardDescription>
+          <CardDescription>
+            Per rate, from line-level invoice snapshots. Confirm filing treatment with your
+            accountant or tax authority.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {taxQ.isLoading ? (
@@ -153,14 +196,18 @@ export function ReportsPage() {
                     <TableCell className="font-medium">{r.tax_rate_name}</TableCell>
                     <TableCell className="text-right tabular-nums">{money(r.net_minor)}</TableCell>
                     <TableCell className="text-right tabular-nums">{money(r.tax_minor)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{money(r.gross_minor)}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {money(r.gross_minor)}
+                    </TableCell>
                   </TableRow>
                 ))}
                 <TableRow className="font-semibold">
                   <TableCell>Total</TableCell>
                   <TableCell className="text-right tabular-nums">{money(taxTotals.net)}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(taxTotals.tax)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(taxTotals.gross)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {money(taxTotals.gross)}
+                  </TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -176,6 +223,8 @@ export function ReportsPage() {
           <CardContent>
             {monthQ.isLoading ? (
               <Loading />
+            ) : monthQ.error ? (
+              <ErrorState error={monthQ.error} onRetry={() => monthQ.refetch()} />
             ) : !monthQ.data || monthQ.data.length === 0 ? (
               <p className="text-sm text-muted-foreground">Nothing issued in this period.</p>
             ) : (
@@ -193,8 +242,12 @@ export function ReportsPage() {
                     <TableRow key={r.month}>
                       <TableCell className="font-medium">{r.month}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.invoice_count}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.tax_minor)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.gross_minor)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(r.tax_minor)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(r.gross_minor)}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -210,6 +263,8 @@ export function ReportsPage() {
           <CardContent>
             {custQ.isLoading ? (
               <Loading />
+            ) : custQ.error ? (
+              <ErrorState error={custQ.error} onRetry={() => custQ.refetch()} />
             ) : !custQ.data || custQ.data.length === 0 ? (
               <p className="text-sm text-muted-foreground">Nothing issued in this period.</p>
             ) : (
@@ -227,8 +282,12 @@ export function ReportsPage() {
                     <TableRow key={r.customer_id}>
                       <TableCell className="font-medium">{r.name}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.invoice_count}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.gross_minor)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.paid_minor)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(r.gross_minor)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(r.paid_minor)}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -247,13 +306,31 @@ export function ReportsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-3">
-          <Button variant="outline" onClick={() => exportCsv("invoices")}>
+          <Button
+            variant="outline"
+            onClick={() => exportCsv("invoices")}
+            disabled={!rangeValid || exporting !== null}
+            loading={exporting === "invoices"}
+            loadingLabel="Exporting…"
+          >
             <FileDown className="size-4" /> Invoices
           </Button>
-          <Button variant="outline" onClick={() => exportCsv("payments")}>
+          <Button
+            variant="outline"
+            onClick={() => exportCsv("payments")}
+            disabled={!rangeValid || exporting !== null}
+            loading={exporting === "payments"}
+            loadingLabel="Exporting…"
+          >
             <FileDown className="size-4" /> Payments
           </Button>
-          <Button variant="outline" onClick={() => exportCsv("customers")}>
+          <Button
+            variant="outline"
+            onClick={() => exportCsv("customers")}
+            disabled={exporting !== null}
+            loading={exporting === "customers"}
+            loadingLabel="Exporting…"
+          >
             <FileDown className="size-4" /> Customers
           </Button>
         </CardContent>
