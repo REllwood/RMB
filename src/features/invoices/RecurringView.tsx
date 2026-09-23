@@ -171,6 +171,11 @@ function ScheduleList({
                     <Badge variant={r.active ? "success" : "outline"}>
                       {r.active ? "active" : "paused"}
                     </Badge>
+                    {r.problem && (
+                      <p className="mt-1 max-w-56 text-xs text-destructive">
+                        Needs attention: {r.problem}. Edit the schedule to fix it.
+                      </p>
+                    )}
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button

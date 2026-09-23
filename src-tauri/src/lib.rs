@@ -5,109 +5,46 @@
 //! build progresses.
 
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 mod commands;
 mod error;
 mod pdf;
+mod startup;
+
+/// Show why the app can't start, then quit when the user dismisses it. The window is hidden so the
+/// half-initialised UI is never used without a database.
+fn report_fatal_startup(app: &tauri::App, message: String) {
+    eprintln!("startup failed: {message}");
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let handle = app.handle().clone();
+    app.dialog()
+        .message(message)
+        .title("RMB couldn't start")
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::Ok)
+        .show(move |_| handle.exit(1));
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Open (creating on first run) the local SQLite database, run migrations, and
-            // share the pool with every command via managed state.
-            let data_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("rmb.sqlite");
-            let pool = tauri::async_runtime::block_on(rmb_data::db::open(&db_path))?;
-            let mut startup_warnings = Vec::new();
-
-            // One-time upgrade for pre-0011 installs: copy the formerly path-only logo into SQLite
-            // before the launch backup runs, making that backup portable to another machine.
-            match tauri::async_runtime::block_on(
-                rmb_data::repos::settings::get_logo_asset(&pool),
-            ) {
-                Ok(None) => {
-                    if let Ok(current) = tauri::async_runtime::block_on(
-                        rmb_data::repos::settings::get(&pool),
-                    ) {
-                        if let Some(path) = current.logo_path.as_deref() {
-                            let format = std::path::Path::new(path)
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                                .map(str::to_ascii_lowercase)
-                                .and_then(|ext| match ext.as_str() {
-                                    "png" => Some("png"),
-                                    "jpg" | "jpeg" => Some("jpg"),
-                                    _ => None,
-                                });
-                            match (std::fs::read(path), format) {
-                                (Ok(bytes), Some(format)) if !bytes.is_empty() => {
-                                    if let Err(error) = tauri::async_runtime::block_on(
-                                        rmb_data::repos::settings::set_logo_asset(
-                                            &pool,
-                                            Some(path),
-                                            Some((&bytes, format)),
-                                        ),
-                                    ) {
-                                        startup_warnings.push(format!(
-                                            "The existing business logo could not be embedded in backups. Re-import it in Settings. ({error})"
-                                        ));
-                                    }
-                                }
-                                _ => startup_warnings.push(
-                                    "The existing business logo could not be embedded in backups. Re-import it in Settings."
-                                        .into(),
-                                ),
-                            }
-                        }
-                    }
-                }
-                Err(error) => startup_warnings.push(format!(
-                    "The stored business logo needs attention. Re-import it in Settings. ({error})"
+            let initialised = match app.path().app_data_dir() {
+                Ok(data_dir) => tauri::async_runtime::block_on(startup::initialise(&data_dir)),
+                Err(error) => Err(format!(
+                    "RMB couldn't find your user profile's application data folder.\n\n{error}"
                 )),
-                Ok(Some(_)) => {}
+            };
+            match initialised {
+                Ok(pool) => {
+                    app.manage(pool);
+                }
+                Err(message) => report_fatal_startup(app, message),
             }
-            if let Err(error) = tauri::async_runtime::block_on(
-                rmb_data::repos::settings::backfill_legacy_invoice_logo_assets(&pool),
-            ) {
-                startup_warnings.push(format!(
-                    "Historical invoice logos could not be upgraded. Re-import the logo and restart RMB. ({error})"
-                ));
-            }
-
-            // Rotating safety net: snapshot the DB on every launch, keep the newest 7.
-            if let Err(e) = tauri::async_runtime::block_on(rmb_data::backup::auto_backup(
-                &pool,
-                &data_dir.join("backups"),
-                7,
-            )) {
-                eprintln!("auto-backup failed: {e}");
-                startup_warnings.push(format!(
-                    "Automatic backup failed. Create a manual backup in Settings before entering new work. ({e})"
-                ));
-            }
-
-            // Generate any recurring invoices that came due while the app was closed.
-            // Drafts only — nothing is issued without the user. Failure is non-fatal.
-            if let Err(e) =
-                tauri::async_runtime::block_on(rmb_data::repos::recurring::run_due_now(&pool))
-            {
-                eprintln!("recurring generation failed: {e}");
-                startup_warnings.push(format!(
-                    "Recurring invoices could not be generated. Review Recurring invoices and try Run due now. ({e})"
-                ));
-            }
-            if let Err(e) = tauri::async_runtime::block_on(rmb_data::repos::meta::set(
-                &pool,
-                "startup.warning",
-                &startup_warnings.join("\n"),
-            )) {
-                eprintln!("could not store startup warning state: {e}");
-            }
-
-            app.manage(pool);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

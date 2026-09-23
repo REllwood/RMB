@@ -24,3 +24,19 @@ pub async fn set(db: &Db, key: &str, value: &str) -> Result<(), DataError> {
     .await?;
     Ok(())
 }
+
+/// Remove and return one-off notices that migrations left for the user (`upgrade.notice.*` keys),
+/// in key order. Startup shows them once alongside its other warnings.
+pub async fn take_upgrade_notices(db: &Db) -> Result<Vec<String>, DataError> {
+    let mut notices: Vec<(String, String)> = sqlx::query_as(
+        "DELETE FROM app_meta WHERE key LIKE 'upgrade.notice.%' RETURNING key, value",
+    )
+    .fetch_all(db)
+    .await?;
+    notices.sort();
+    Ok(notices
+        .into_iter()
+        .map(|(_, value)| value)
+        .filter(|value| !value.trim().is_empty())
+        .collect())
+}

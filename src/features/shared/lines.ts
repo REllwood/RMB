@@ -88,8 +88,8 @@ export function validateEditLines(lines: EditLine[], items: Item[] = []): LineIs
             ? "Tracked products need a whole quantity"
             : undefined,
       price:
-        price === null || price < 0
-          ? "Enter a valid non-negative price with no more than two decimal places"
+        price === null
+          ? "Enter a valid price with no more than two decimal places (use a minus sign for a discount)"
           : undefined,
     };
   });

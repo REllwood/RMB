@@ -42,8 +42,15 @@ describe("document line validation", () => {
     expect(issues[0]).toEqual({
       description: "Description is required",
       quantity: "Tracked products need a whole quantity",
-      price: "Enter a valid non-negative price with no more than two decimal places",
+      price:
+        "Enter a valid price with no more than two decimal places (use a minus sign for a discount)",
     });
+  });
+
+  it("accepts negative prices as discount lines", () => {
+    expect(validateEditLines([line({ description: "Loyalty discount", price: "-10.00" })])).toEqual([
+      { description: undefined, quantity: undefined, price: undefined },
+    ]);
   });
 
   it("trims validated payload text and preserves exact minor units", () => {

@@ -44,6 +44,9 @@ pub struct RecurringListRow {
     #[serde(flatten)]
     pub schedule: RecurringInvoice,
     pub total_minor: i64,
+    /// Why the template cannot generate invoices as stored (edit the schedule to fix it). The list
+    /// must still load so the schedule can be opened, fixed, paused or deleted.
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -351,8 +354,13 @@ pub async fn list(db: &Db) -> Result<Vec<RecurringListRow>, DataError> {
     let mut rows = Vec::with_capacity(schedules.len());
     for schedule in schedules {
         let lines = lines_for(db, schedule.id).await?;
+        let (total_minor, problem) = match template_total(&lines) {
+            Ok(total) => (total, None),
+            Err(error) => (0, Some(error.to_string())),
+        };
         rows.push(RecurringListRow {
-            total_minor: template_total(&lines)?,
+            total_minor,
+            problem,
             schedule,
         });
     }

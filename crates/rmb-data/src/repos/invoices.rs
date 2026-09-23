@@ -105,9 +105,7 @@ pub(crate) fn to_doc_line(l: &LineInput) -> Result<DocumentLine, DataError> {
             "line quantity must be greater than zero and no more than 1,000,000,000".into(),
         ));
     }
-    if l.unit_price_minor < 0 {
-        return Err(DataError::Other("unit price cannot be negative".into()));
-    }
+    // Negative prices are discount lines; the document total is checked in `validated_totals`.
     let tax_rate_name = l.tax_rate_name.trim();
     if tax_rate_name.is_empty() {
         return Err(DataError::Other("every line needs a tax-rate name".into()));
@@ -133,7 +131,7 @@ pub(crate) fn to_doc_line(l: &LineInput) -> Result<DocumentLine, DataError> {
         })
         .ok_or_else(|| DataError::Other("line amount is too large".into()))?;
     // Exclusive tax can expand the amount by at most 11× under the rate bound above.
-    if rounded_amount > i64::MAX / 11 {
+    if rounded_amount.unsigned_abs() > (i64::MAX / 11).unsigned_abs() {
         return Err(DataError::Other("line amount is too large".into()));
     }
     Ok(DocumentLine::new(
@@ -173,6 +171,12 @@ pub(crate) fn validated_totals(lines: &[LineInput]) -> Result<DocumentTotals, Da
             .ok_or_else(|| DataError::Other("document total is too large".into()))?;
     }
     debug_assert_eq!(net.checked_add(tax), Some(gross));
+    if gross < 0 {
+        return Err(DataError::Other(
+            "the document total cannot be negative; discount lines must not exceed the other lines"
+                .into(),
+        ));
+    }
     Ok(total_lines(&doc_lines))
 }
 
@@ -911,6 +915,43 @@ mod tests {
             .fetch_one(&pool)
             .await?;
         assert_eq!(count, 0, "failed validation must not leave draft rows");
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn discount_lines_reduce_the_total_but_never_below_zero(
+        pool: Db,
+    ) -> Result<(), DataError> {
+        let customer = seed_customer(&pool).await;
+        let mut discount = line(None, "1", -2500, 2000);
+        discount.description = "Loyalty discount".into();
+        let inv = create_draft(
+            &pool,
+            customer,
+            &[line(None, "1", 10000, 2000), discount.clone()],
+            None,
+            "",
+        )
+        .await?;
+        let detail = get_detail(&pool, inv).await?.unwrap();
+        assert_eq!(detail.invoice.subtotal_minor, 7500);
+        assert_eq!(detail.invoice.tax_minor, 1500);
+        assert_eq!(detail.invoice.total_minor, 9000);
+
+        let mut too_big = discount;
+        too_big.unit_price_minor = -20000;
+        assert!(
+            create_draft(
+                &pool,
+                customer,
+                &[line(None, "1", 10000, 2000), too_big],
+                None,
+                ""
+            )
+            .await
+            .is_err(),
+            "a document total below zero is rejected"
+        );
         Ok(())
     }
 

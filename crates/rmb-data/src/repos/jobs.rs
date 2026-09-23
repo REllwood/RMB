@@ -432,11 +432,16 @@ pub async fn get_detail(db: &Db, id: i64) -> Result<Option<JobDetail>, DataError
     }
     let mut materials_total_minor = 0_i64;
     for material in &materials {
-        let qty = Decimal::from_str(material.quantity.trim())
-            .map_err(|_| DataError::Other("stored material has an invalid quantity".into()))?;
-        let amount = (Decimal::from(material.unit_price_minor) * qty)
-            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
-            .to_i64()
+        // Display must never fail on stored data: a quantity that can't be parsed counts as zero here
+        // and is reported by name when the job is invoiced, so the row can still be seen and removed.
+        let qty = Decimal::from_str(material.quantity.trim()).unwrap_or(Decimal::ZERO);
+        let amount = Decimal::from(material.unit_price_minor)
+            .checked_mul(qty)
+            .and_then(|amount| {
+                amount
+                    .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+                    .to_i64()
+            })
             .ok_or_else(|| DataError::Other("material amount is too large".into()))?;
         materials_total_minor = materials_total_minor
             .checked_add(amount)
