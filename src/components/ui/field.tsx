@@ -5,6 +5,7 @@ type ControlProps = {
   id: string;
   "aria-invalid": boolean;
   "aria-describedby": string | undefined;
+  "aria-required": true | undefined;
 };
 
 /**
@@ -41,7 +42,12 @@ export function Field({
           </span>
         )}
       </Label>
-      {children({ id, "aria-invalid": Boolean(error), "aria-describedby": describedBy })}
+      {children({
+        id,
+        "aria-invalid": Boolean(error),
+        "aria-describedby": describedBy,
+        "aria-required": required || undefined,
+      })}
       {hint && (
         <p id={hintId} className="text-xs text-muted-foreground">
           {hint}

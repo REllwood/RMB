@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Moon, Store, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { setTheme, type Theme } from "@/lib/theme";
-import { NavContext } from "@/app/nav";
+import { NavContext, ViewFocusContext } from "@/app/nav";
 import { SECTIONS, type SectionId } from "@/app/sections";
 
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -41,11 +41,19 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
   const [active, setActive] = useState<SectionId>("dashboard");
   const [theme, setThemeState] = useState<Theme>(initialTheme);
   const mainRef = useRef<HTMLElement>(null);
+  // Bumped whenever the section or a page's view changes; focus follows it (never on first load,
+  // so keyboard users start at the skip link and navigation).
+  const [focusRequest, setFocusRequest] = useState(0);
+  const requestFocus = useCallback(() => setFocusRequest((n) => n + 1), []);
 
-  // SPA focus management: move focus to the main region when the section changes.
   useEffect(() => {
-    mainRef.current?.focus();
-  }, [active]);
+    if (focusRequest > 0) mainRef.current?.focus();
+  }, [focusRequest]);
+
+  function goTo(section: SectionId) {
+    setActive(section);
+    requestFocus();
+  }
 
   function toggleTheme() {
     const next: Theme = theme === "dark" ? "light" : "dark";
@@ -82,7 +90,7 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
             <button
               key={section.id}
               type="button"
-              onClick={() => setActive(section.id)}
+              onClick={() => goTo(section.id)}
               aria-current={isActive ? "page" : undefined}
               className={cn(
                 "relative flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors",
@@ -112,8 +120,10 @@ export function Layout({ initialTheme }: { initialTheme: Theme }) {
         tabIndex={-1}
         className="overflow-y-auto p-6 outline-none lg:p-8"
       >
-        <NavContext.Provider value={setActive}>
-          <div className="mx-auto max-w-7xl">{renderSection(active)}</div>
+        <NavContext.Provider value={goTo}>
+          <ViewFocusContext.Provider value={requestFocus}>
+            <div className="mx-auto max-w-7xl">{renderSection(active)}</div>
+          </ViewFocusContext.Provider>
         </NavContext.Provider>
       </main>
     </div>

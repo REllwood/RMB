@@ -2,6 +2,7 @@ import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { FileDown, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 
+import { useView } from "@/app/nav";
 import { ipc } from "@/lib/ipc";
 import { useIpcMutation, useIpcQuery } from "@/lib/useIpc";
 import type { InvoiceDetail, InvoiceRow } from "@/lib/types";
@@ -43,7 +44,7 @@ function StatusBadge({ inv }: { inv: Pick<InvoiceRow, "status" | "due_date"> }) 
 }
 
 export function InvoicesPage() {
-  const [view, setView] = useState<View>({ mode: "list" });
+  const [view, setView] = useView<View>({ mode: "list" });
 
   return (
     <div className="space-y-6">
