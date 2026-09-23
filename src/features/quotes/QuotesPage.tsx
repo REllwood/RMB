@@ -19,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
+import { useToast } from "@/components/ui/toast";
 import { DocumentForm } from "@/features/shared/DocumentForm";
 import { fromRows } from "@/features/shared/lines";
 
@@ -75,7 +76,11 @@ export function QuotesPage() {
         <QuoteEdit id={view.id} onDone={() => setView({ mode: "detail", id: view.id })} />
       )}
       {view.mode === "detail" && (
-        <QuoteDetailView id={view.id} onEdit={() => setView({ mode: "edit", id: view.id })} onDeleted={() => setView({ mode: "list" })} />
+        <QuoteDetailView
+          id={view.id}
+          onEdit={() => setView({ mode: "edit", id: view.id })}
+          onDeleted={() => setView({ mode: "list" })}
+        />
       )}
     </div>
   );
@@ -93,7 +98,12 @@ function QuoteList({ onOpen }: { onOpen: (id: number) => void }) {
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   if (!q.data || q.data.length === 0)
-    return <EmptyState title="No quotes yet" description="Create a quote, then convert it to a job or invoice when accepted." />;
+    return (
+      <EmptyState
+        title="No quotes yet"
+        description="Create a quote, then convert it to a job or invoice when accepted."
+      />
+    );
   return (
     <Card className="overflow-hidden py-0">
       <Table>
@@ -145,7 +155,12 @@ function QuoteEdit({ id, onDone }: { id: number; onDone: () => void }) {
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   if (!q.data) return <EmptyState title="Quote not found" />;
   if (q.data.quote.status !== "draft")
-    return <EmptyState title="Only draft quotes can be edited" description="Pull a sent quote back to draft first." />;
+    return (
+      <EmptyState
+        title="Only draft quotes can be edited"
+        description="Pull a sent quote back to draft first."
+      />
+    );
   return (
     <DocumentForm
       kind="quote"
@@ -171,6 +186,7 @@ function QuoteDetailView({
   onEdit: () => void;
   onDeleted: () => void;
 }) {
+  const toast = useToast();
   const money = useMoneyFormat();
   const names = useCustomerNames();
   const q = useIpcQuery(["quote", id], () => ipc.getQuote(id));
@@ -187,6 +203,7 @@ function QuoteDetailView({
     successMessage: "Quote deleted",
   });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -194,14 +211,25 @@ function QuoteDetailView({
 
   const { quote, lines } = q.data;
   const linkedJob = (jobsQ.data ?? []).find((j) => j.source_quote_id === quote.id);
-  const deletable = quote.status === "draft" || quote.status === "declined" || quote.status === "expired";
+  const deletable =
+    quote.status === "draft" || quote.status === "declined" || quote.status === "expired";
 
   async function onExportPdf() {
-    const path = await save({
-      defaultPath: `${quote.number ?? `quote-${quote.id}`}.pdf`,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (path) await ipc.exportQuotePdf(quote.id, path);
+    setExporting(true);
+    try {
+      const path = await save({
+        defaultPath: `${quote.number ?? `quote-${quote.id}`}.pdf`,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (path) {
+        await ipc.exportQuotePdf(quote.id, path);
+        toast("success", "Quote PDF exported");
+      }
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -231,7 +259,9 @@ function QuoteDetailView({
               <TableRow key={l.id}>
                 <TableCell>{l.description}</TableCell>
                 <TableCell className="text-right tabular-nums">{l.quantity}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(l.unit_price_minor)}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {money(l.unit_price_minor)}
+                </TableCell>
                 <TableCell className="text-right tabular-nums">{money(l.gross_minor)}</TableCell>
               </TableRow>
             ))}
@@ -245,40 +275,103 @@ function QuoteDetailView({
         </div>
 
         <div className="flex flex-wrap gap-2 border-t pt-4">
-          <Button variant="outline" onClick={onExportPdf}>
+          <Button
+            variant="outline"
+            onClick={onExportPdf}
+            loading={exporting}
+            loadingLabel="Exporting…"
+          >
             <FileDown className="size-4" /> Export PDF
           </Button>
           {quote.status === "draft" && (
             <>
-              <Button variant="outline" onClick={onEdit}>
+              <Button variant="outline" onClick={onEdit} disabled={setStatus.isPending}>
                 <Pencil className="size-4" /> Edit
               </Button>
-              <Button onClick={() => setStatus.mutate("sent")}>Mark sent</Button>
+              <Button
+                onClick={() => setStatus.mutate("sent")}
+                loading={setStatus.isPending && setStatus.variables === "sent"}
+                loadingLabel="Updating…"
+              >
+                Mark sent
+              </Button>
             </>
           )}
           {quote.status === "sent" && (
             <>
-              <Button onClick={() => setStatus.mutate("accepted")}>Mark accepted</Button>
-              <Button variant="outline" onClick={() => setStatus.mutate("declined")}>
+              <Button
+                onClick={() => setStatus.mutate("accepted")}
+                disabled={setStatus.isPending}
+                loading={setStatus.isPending && setStatus.variables === "accepted"}
+                loadingLabel="Updating…"
+              >
+                Mark accepted
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setStatus.mutate("declined")}
+                disabled={setStatus.isPending}
+                loading={setStatus.isPending && setStatus.variables === "declined"}
+                loadingLabel="Updating…"
+              >
                 Decline
               </Button>
-              <Button variant="ghost" onClick={() => setStatus.mutate("draft")}>
+              <Button
+                variant="ghost"
+                onClick={() => setStatus.mutate("draft")}
+                disabled={setStatus.isPending}
+                loading={setStatus.isPending && setStatus.variables === "draft"}
+                loadingLabel="Updating…"
+              >
                 Back to draft
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setStatus.mutate("expired")}
+                disabled={setStatus.isPending}
+                loading={setStatus.isPending && setStatus.variables === "expired"}
+                loadingLabel="Updating…"
+              >
+                Mark expired
               </Button>
             </>
           )}
           {quote.status === "accepted" && (
             <>
-              <Button onClick={() => convert.mutate(undefined)} disabled={convert.isPending}>
+              <Button
+                onClick={() => convert.mutate(undefined)}
+                disabled={toJob.isPending || setStatus.isPending}
+                loading={convert.isPending}
+                loadingLabel="Converting…"
+              >
                 <Receipt className="size-4" /> Convert to invoice
               </Button>
-              <Button variant="outline" onClick={() => toJob.mutate(undefined)} disabled={toJob.isPending}>
+              <Button
+                variant="outline"
+                onClick={() => toJob.mutate(undefined)}
+                disabled={convert.isPending || setStatus.isPending}
+                loading={toJob.isPending}
+                loadingLabel="Converting…"
+              >
                 <Hammer className="size-4" /> Convert to job
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setStatus.mutate("declined")}
+                disabled={convert.isPending || toJob.isPending || setStatus.isPending}
+                loading={setStatus.isPending && setStatus.variables === "declined"}
+                loadingLabel="Updating…"
+              >
+                Decline
               </Button>
             </>
           )}
           {deletable && (
-            <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmDelete(true)}
+              disabled={setStatus.isPending}
+            >
               <Trash2 className="size-4" /> Delete
             </Button>
           )}
@@ -288,7 +381,9 @@ function QuoteDetailView({
             </p>
           )}
           {linkedJob && (
-            <p className="self-center text-sm text-muted-foreground">Converted → {linkedJob.title}</p>
+            <p className="self-center text-sm text-muted-foreground">
+              Converted → {linkedJob.title}
+            </p>
           )}
         </div>
       </CardContent>
@@ -297,8 +392,12 @@ function QuoteDetailView({
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         onConfirm={async () => {
-          await deleteQuote.mutateAsync(undefined);
-          onDeleted();
+          try {
+            await deleteQuote.mutateAsync(undefined);
+            onDeleted();
+          } catch {
+            // Keep the dialog open so the backend validation remains actionable.
+          }
         }}
         title="Delete this quote?"
         description="The quote is removed from your lists. Its number is not reused."

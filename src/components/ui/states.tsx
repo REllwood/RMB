@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { AlertCircle, Inbox, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -33,8 +33,26 @@ export function EmptyState({
   );
 }
 
-export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+export function ErrorState({
+  error,
+  onRetry,
+}: {
+  error: unknown;
+  onRetry?: () => unknown | Promise<unknown>;
+}) {
+  const [retrying, setRetrying] = useState(false);
   const message = error instanceof Error ? error.message : String(error);
+
+  async function retry() {
+    if (!onRetry || retrying) return;
+    setRetrying(true);
+    try {
+      await onRetry();
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   return (
     <div
       role="alert"
@@ -43,7 +61,13 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
       <AlertCircle className="size-6 text-destructive" aria-hidden />
       <p className="text-sm">{message}</p>
       {onRetry && (
-        <Button variant="outline" size="sm" onClick={onRetry}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={retry}
+          loading={retrying}
+          loadingLabel="Trying again…"
+        >
           Try again
         </Button>
       )}

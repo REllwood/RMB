@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
+import { useToast } from "@/components/ui/toast";
 import { DocumentForm } from "@/features/shared/DocumentForm";
 import { fromRows } from "@/features/shared/lines";
 import { invoiceStatus } from "@/features/invoices/status";
@@ -76,10 +77,7 @@ export function InvoicesPage() {
         />
       )}
       {view.mode === "edit" && (
-        <InvoiceEdit
-          id={view.id}
-          onDone={() => setView({ mode: "detail", id: view.id })}
-        />
+        <InvoiceEdit id={view.id} onDone={() => setView({ mode: "detail", id: view.id })} />
       )}
       {view.mode === "detail" && (
         <InvoiceDetailView
@@ -104,7 +102,9 @@ function InvoiceList({ onOpen }: { onOpen: (id: number) => void }) {
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   if (!q.data || q.data.length === 0)
-    return <EmptyState title="No invoices yet" description="Create your first invoice to get paid." />;
+    return (
+      <EmptyState title="No invoices yet" description="Create your first invoice to get paid." />
+    );
   return (
     <Card className="overflow-hidden py-0">
       <Table>
@@ -161,7 +161,12 @@ function InvoiceEdit({ id, onDone }: { id: number; onDone: () => void }) {
   if (!q.data) return <EmptyState title="Invoice not found" />;
   const d: InvoiceDetail = q.data;
   if (d.invoice.status !== "draft")
-    return <EmptyState title="Only drafts can be edited" description="Void + reissue to correct an issued invoice." />;
+    return (
+      <EmptyState
+        title="Only drafts can be edited"
+        description="Void + reissue to correct an issued invoice."
+      />
+    );
   return (
     <DocumentForm
       kind="invoice"
@@ -201,24 +206,48 @@ function PaymentDialog({
       open={open}
       onClose={onClose}
       title="Record payment"
-      description="Overpayments are clamped to the outstanding balance."
+      description="Enter an amount up to the outstanding balance. Overpayments are rejected."
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button
-            disabled={!parsed || parsed <= 0 || pending}
-            onClick={() => parsed && parsed > 0 && onSubmit({ amountMinor: parsed, method, reference })}
+            disabled={!parsed || parsed <= 0 || parsed > balanceMinor || !method.trim()}
+            loading={pending}
+            loadingLabel="Saving…"
+            onClick={() =>
+              parsed &&
+              parsed > 0 &&
+              parsed <= balanceMinor &&
+              onSubmit({ amountMinor: parsed, method, reference })
+            }
           >
-            {pending ? "Saving…" : "Record payment"}
+            Record payment
           </Button>
         </>
       }
     >
       <div className="grid gap-4">
-        <Field label="Amount" required>
-          {(p) => <Input {...p} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />}
+        <Field
+          label="Amount"
+          required
+          error={
+            parsed === null || parsed <= 0
+              ? "Enter a valid positive amount"
+              : parsed > balanceMinor
+                ? "Amount exceeds the outstanding balance"
+                : undefined
+          }
+        >
+          {(p) => (
+            <Input
+              {...p}
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          )}
         </Field>
         <Field label="Method">
           {(p) => (
@@ -248,11 +277,16 @@ function InvoiceDetailView({
   onEdit: () => void;
   onDeleted: () => void;
 }) {
+  const toast = useToast();
   const money = useMoneyFormat();
   const names = useCustomerNames();
   const q = useIpcQuery(["invoice", id], () => ipc.getInvoice(id));
   const isDraft = q.data?.invoice.status === "draft";
-  const paymentsQ = useIpcQuery(["payments", id], () => ipc.invoicePayments(id), !!q.data && !isDraft);
+  const paymentsQ = useIpcQuery(
+    ["payments", id],
+    () => ipc.invoicePayments(id),
+    !!q.data && !isDraft,
+  );
 
   const refresh: unknown[][] = [["invoice", id], ["invoices"], ["payments", id], ["dashboard"]];
   const issue = useIpcMutation(() => ipc.issueInvoice(id), [...refresh, ["items"]], {
@@ -270,14 +304,24 @@ function InvoiceDetailView({
     refresh,
     { successMessage: "Payment recorded" },
   );
-  const removePayment = useIpcMutation((paymentId: number) => ipc.deletePayment(paymentId), refresh, {
-    successMessage: "Payment removed",
-  });
+  const removePayment = useIpcMutation(
+    (paymentId: number) => ipc.deletePayment(paymentId),
+    refresh,
+    {
+      successMessage: "Payment removed",
+    },
+  );
 
   const [confirm, setConfirm] = useState<
-    null | { kind: "issue" } | { kind: "void" } | { kind: "delete" } | { kind: "remove-payment"; id: number }
+    | null
+    | { kind: "issue" }
+    | { kind: "void" }
+    | { kind: "delete" }
+    | { kind: "remove-payment"; id: number }
   >(null);
   const [paying, setPaying] = useState(false);
+  const [exportingDocument, setExportingDocument] = useState(false);
+  const [exportingReceipt, setExportingReceipt] = useState(false);
 
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -288,11 +332,39 @@ function InvoiceDetailView({
   const payable = invoice.status === "issued" || invoice.status === "part_paid";
 
   async function onExportPdf() {
-    const path = await save({
-      defaultPath: `${invoice.number ?? `invoice-${invoice.id}`}.pdf`,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (path) await ipc.exportInvoicePdf(invoice.id, path);
+    setExportingDocument(true);
+    try {
+      const path = await save({
+        defaultPath: `${invoice.number ?? `invoice-${invoice.id}`}.pdf`,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (path) {
+        await ipc.exportInvoicePdf(invoice.id, path);
+        toast("success", "Invoice PDF exported");
+      }
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportingDocument(false);
+    }
+  }
+
+  async function onExportReceipt() {
+    setExportingReceipt(true);
+    try {
+      const path = await save({
+        defaultPath: `${invoice.number ?? `invoice-${invoice.id}`}-receipt.pdf`,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (path) {
+        await ipc.exportReceiptPdf(invoice.id, path);
+        toast("success", "Receipt PDF exported");
+      }
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportingReceipt(false);
+    }
   }
 
   return (
@@ -326,7 +398,9 @@ function InvoiceDetailView({
                 <TableRow key={l.id}>
                   <TableCell>{l.description}</TableCell>
                   <TableCell className="text-right tabular-nums">{l.quantity}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(l.unit_price_minor)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {money(l.unit_price_minor)}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{money(l.net_minor)}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(l.tax_minor)}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(l.gross_minor)}</TableCell>
@@ -344,7 +418,12 @@ function InvoiceDetailView({
           </div>
 
           <div className="flex flex-wrap gap-2 border-t pt-4">
-            <Button variant="outline" onClick={onExportPdf}>
+            <Button
+              variant="outline"
+              onClick={onExportPdf}
+              loading={exportingDocument}
+              loadingLabel="Exporting…"
+            >
               <FileDown className="size-4" /> Export PDF
             </Button>
             {invoice.status === "draft" && (
@@ -352,25 +431,17 @@ function InvoiceDetailView({
                 <Button variant="outline" onClick={onEdit}>
                   <Pencil className="size-4" /> Edit
                 </Button>
-                <Button onClick={() => setConfirm({ kind: "issue" })} disabled={issue.isPending}>
-                  Issue invoice
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => setConfirm({ kind: "delete" })}
-                  disabled={deleteDraft.isPending}
-                >
+                <Button onClick={() => setConfirm({ kind: "issue" })}>Issue invoice</Button>
+                <Button variant="ghost" onClick={() => setConfirm({ kind: "delete" })}>
                   <Trash2 className="size-4" /> Delete draft
                 </Button>
               </>
             )}
             {payable && (
               <>
-                <Button onClick={() => setPaying(true)} disabled={pay.isPending}>
-                  Record payment
-                </Button>
+                <Button onClick={() => setPaying(true)}>Record payment</Button>
                 {amount_paid_minor === 0 && (
-                  <Button variant="outline" onClick={() => setConfirm({ kind: "void" })} disabled={voidMut.isPending}>
+                  <Button variant="outline" onClick={() => setConfirm({ kind: "void" })}>
                     Void
                   </Button>
                 )}
@@ -388,13 +459,9 @@ function InvoiceDetailView({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={async () => {
-                  const path = await save({
-                    defaultPath: `${invoice.number ?? `invoice-${invoice.id}`}-receipt.pdf`,
-                    filters: [{ name: "PDF", extensions: ["pdf"] }],
-                  });
-                  if (path) await ipc.exportReceiptPdf(invoice.id, path);
-                }}
+                onClick={onExportReceipt}
+                loading={exportingReceipt}
+                loadingLabel="Exporting…"
               >
                 <FileDown className="size-4" /> Receipt PDF
               </Button>
@@ -403,6 +470,8 @@ function InvoiceDetailView({
           <CardContent>
             {paymentsQ.isLoading ? (
               <Loading />
+            ) : paymentsQ.error ? (
+              <ErrorState error={paymentsQ.error} onRetry={() => paymentsQ.refetch()} />
             ) : !paymentsQ.data || paymentsQ.data.length === 0 ? (
               <p className="text-sm text-muted-foreground">No payments recorded yet.</p>
             ) : (
@@ -424,7 +493,9 @@ function InvoiceDetailView({
                       <TableCell>{p.date.slice(0, 10)}</TableCell>
                       <TableCell>{p.method || "—"}</TableCell>
                       <TableCell className="text-muted-foreground">{p.reference || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(p.amount_minor)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(p.amount_minor)}
+                      </TableCell>
                       <TableCell className="text-right">
                         {invoice.status !== "void" && (
                           <Button
@@ -453,8 +524,12 @@ function InvoiceDetailView({
           balanceMinor={balance}
           pending={pay.isPending}
           onSubmit={async (v) => {
-            await pay.mutateAsync(v);
-            setPaying(false);
+            try {
+              await pay.mutateAsync(v);
+              setPaying(false);
+            } catch {
+              // Keep the form open so the user can correct the payment.
+            }
           }}
         />
       )}
@@ -463,8 +538,12 @@ function InvoiceDetailView({
         open={confirm?.kind === "issue"}
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
-          await issue.mutateAsync(undefined);
-          setConfirm(null);
+          try {
+            await issue.mutateAsync(undefined);
+            setConfirm(null);
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Issue this invoice?"
         description="It gets the next number and is locked — corrections need a void + reissue. Tracked stock is decremented now."
@@ -475,8 +554,12 @@ function InvoiceDetailView({
         open={confirm?.kind === "void"}
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
-          await voidMut.mutateAsync(undefined);
-          setConfirm(null);
+          try {
+            await voidMut.mutateAsync(undefined);
+            setConfirm(null);
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Void this invoice?"
         description="Stock is restored and the number is kept on record. This can't be undone."
@@ -488,8 +571,12 @@ function InvoiceDetailView({
         open={confirm?.kind === "delete"}
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
-          await deleteDraft.mutateAsync(undefined);
-          onDeleted();
+          try {
+            await deleteDraft.mutateAsync(undefined);
+            onDeleted();
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Delete this draft?"
         description="Drafts have no number and no stock effect — deleting is permanent."
@@ -501,8 +588,13 @@ function InvoiceDetailView({
         open={confirm?.kind === "remove-payment"}
         onClose={() => setConfirm(null)}
         onConfirm={async () => {
-          if (confirm?.kind === "remove-payment") await removePayment.mutateAsync(confirm.id);
-          setConfirm(null);
+          if (confirm?.kind !== "remove-payment") return;
+          try {
+            await removePayment.mutateAsync(confirm.id);
+            setConfirm(null);
+          } catch {
+            // Keep the dialog open so the backend explanation remains visible.
+          }
         }}
         title="Remove this payment?"
         description="The invoice balance increases and its status is recalculated. Use this to correct a mis-entered payment."

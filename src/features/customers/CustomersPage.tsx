@@ -61,25 +61,53 @@ function CustomerForm({
     <Card>
       <CardContent className="grid gap-4 pt-6 sm:grid-cols-2">
         <Field label="Name" required>
-          {(p) => <Input {...p} value={input.name} onChange={(e) => field("name", e.target.value)} />}
+          {(p) => (
+            <Input {...p} value={input.name} onChange={(e) => field("name", e.target.value)} />
+          )}
         </Field>
         <Field label="Email">
-          {(p) => <Input {...p} type="email" value={input.email} onChange={(e) => field("email", e.target.value)} />}
+          {(p) => (
+            <Input
+              {...p}
+              type="email"
+              value={input.email}
+              onChange={(e) => field("email", e.target.value)}
+            />
+          )}
         </Field>
         <Field label="Phone">
-          {(p) => <Input {...p} value={input.phone} onChange={(e) => field("phone", e.target.value)} />}
+          {(p) => (
+            <Input {...p} value={input.phone} onChange={(e) => field("phone", e.target.value)} />
+          )}
         </Field>
         <Field label="Billing address">
-          {(p) => <Input {...p} value={input.billing_address} onChange={(e) => field("billing_address", e.target.value)} />}
+          {(p) => (
+            <Input
+              {...p}
+              value={input.billing_address}
+              onChange={(e) => field("billing_address", e.target.value)}
+            />
+          )}
         </Field>
         <div className="sm:col-span-2">
           <Field label="Notes">
-            {(p) => <Textarea {...p} value={input.notes} onChange={(e) => field("notes", e.target.value)} />}
+            {(p) => (
+              <Textarea
+                {...p}
+                value={input.notes}
+                onChange={(e) => field("notes", e.target.value)}
+              />
+            )}
           </Field>
         </div>
         <div className="flex gap-2 sm:col-span-2">
-          <Button onClick={() => onSubmit(input)} disabled={!input.name.trim() || pending}>
-            {pending ? "Saving…" : "Save"}
+          <Button
+            onClick={() => onSubmit(input)}
+            disabled={!input.name.trim()}
+            loading={pending}
+            loadingLabel="Saving…"
+          >
+            Save
           </Button>
           <Button variant="ghost" onClick={onCancel}>
             Cancel
@@ -114,9 +142,13 @@ function CustomerList({ onOpen }: { onOpen: (id: number) => void }) {
           initial={{ ...EMPTY }}
           pending={createMut.isPending}
           onSubmit={async (input) => {
-            const id = await createMut.mutateAsync(input);
-            setCreating(false);
-            onOpen(id);
+            try {
+              const id = await createMut.mutateAsync(input);
+              setCreating(false);
+              onOpen(id);
+            } catch {
+              // useIpcMutation has already shown the backend error.
+            }
           }}
           onCancel={() => setCreating(false)}
         />
@@ -241,8 +273,12 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
           }}
           pending={updateMut.isPending}
           onSubmit={async (input) => {
-            await updateMut.mutateAsync({ id, input });
-            setEditing(false);
+            try {
+              await updateMut.mutateAsync({ id, input });
+              setEditing(false);
+            } catch {
+              // useIpcMutation has already shown the backend error.
+            }
           }}
           onCancel={() => setEditing(false)}
         />
@@ -259,7 +295,9 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
             </p>
             <p className="flex items-center gap-2 sm:col-span-2">
               <MapPin className="size-4 text-muted-foreground" aria-hidden />
-              {c.billing_address || <span className="text-muted-foreground">No billing address</span>}
+              {c.billing_address || (
+                <span className="text-muted-foreground">No billing address</span>
+              )}
             </p>
             {c.notes && <p className="text-muted-foreground sm:col-span-2">{c.notes}</p>}
           </CardContent>
@@ -291,14 +329,18 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
                       const s = invoiceStatus(inv);
                       return (
                         <TableRow key={inv.id}>
-                          <TableCell className="font-medium">{inv.number ?? `Draft #${inv.id}`}</TableCell>
+                          <TableCell className="font-medium">
+                            {inv.number ?? `Draft #${inv.id}`}
+                          </TableCell>
                           <TableCell className="text-muted-foreground">
                             {inv.issue_date ?? inv.created_at.slice(0, 10)}
                           </TableCell>
                           <TableCell>
                             <Badge variant={s.variant}>{s.label}</Badge>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">{money(inv.total_minor)}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {money(inv.total_minor)}
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -357,11 +399,15 @@ function CustomerDetail({ id, onBack }: { id: number; onBack: () => void }) {
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         onConfirm={async () => {
-          await deleteMut.mutateAsync(id);
-          onBack();
+          try {
+            await deleteMut.mutateAsync(id);
+            onBack();
+          } catch {
+            // Keep the dialog open so the active-work validation is visible.
+          }
         }}
         title={`Delete ${c.name}?`}
-        description="Their documents are kept; the customer just disappears from pickers and lists."
+        description="Customers with draft or active work cannot be deleted. Completed documents keep their historical details."
         confirmLabel="Delete customer"
         destructive
         pending={deleteMut.isPending}

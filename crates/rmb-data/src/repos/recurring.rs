@@ -3,17 +3,15 @@
 //! reviews and issues it), advancing `next_date` in the same transaction as each draft so a
 //! crash can never double-generate. Schedules auto-deactivate once past their end date.
 //!
-//! Note: SQLite's `+1 month` normalizes overflow (Jan 31 → Mar 3), so monthly schedules
-//! anchored on the 29th–31st drift to early-month after a short month. Anchor on days 1–28
-//! for stable monthly dates.
+//! Month-based schedules preserve their original day-of-month and clamp to the target month's
+//! final day (31 January → 28 February → 31 March; leap years included).
 
-use rmb_domain::document::total_lines;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 use crate::db::Db;
 use crate::error::DataError;
-use crate::repos::invoices::{self, to_doc_line, LineInput};
+use crate::repos::invoices::{self, to_doc_line, validate_line_items, validated_totals, LineInput};
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct RecurringInvoice {
@@ -23,6 +21,7 @@ pub struct RecurringInvoice {
     pub next_date: String,
     pub end_date: Option<String>,
     pub due_days: Option<i64>,
+    pub anchor_day: i64,
     pub notes: String,
     pub active: bool,
     pub created_at: String,
@@ -71,9 +70,11 @@ fn frequency_modifier(frequency: &str) -> Result<&'static str, DataError> {
         "monthly" => "+1 month",
         "quarterly" => "+3 months",
         "yearly" => "+1 year",
-        other => return Err(DataError::Other(format!(
+        other => {
+            return Err(DataError::Other(format!(
             "unknown frequency '{other}' (use weekly, fortnightly, monthly, quarterly, or yearly)"
-        ))),
+        )))
+        }
     })
 }
 
@@ -84,10 +85,108 @@ fn validate(input: &RecurringInput, lines: &[LineInput]) -> Result<(), DataError
             "a schedule needs at least one line".into(),
         ));
     }
-    if input.next_date.is_empty() {
-        return Err(DataError::Other("a schedule needs a start date".into()));
+    let (_, _, _) = date_parts(&input.next_date)
+        .ok_or_else(|| DataError::Other("start date must be a valid YYYY-MM-DD date".into()))?;
+    if let Some(end) = input.end_date.as_deref() {
+        date_parts(end)
+            .ok_or_else(|| DataError::Other("end date must be a valid YYYY-MM-DD date".into()))?;
+        if end < input.next_date.as_str() {
+            return Err(DataError::Other(
+                "end date cannot be earlier than the start date".into(),
+            ));
+        }
+    }
+    if input
+        .due_days
+        .is_some_and(|days| !(0..=3_650).contains(&days))
+    {
+        return Err(DataError::Other(
+            "invoice due days must be between 0 and 3,650".into(),
+        ));
+    }
+    if input.notes.chars().count() > 20_000 {
+        return Err(DataError::Other(
+            "schedule notes cannot exceed 20,000 characters".into(),
+        ));
+    }
+    validated_totals(lines)?;
+    Ok(())
+}
+
+async fn ensure_active_customer(
+    conn: &mut sqlx::SqliteConnection,
+    customer_id: i64,
+) -> Result<(), DataError> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM customer WHERE id = ? AND deleted_at IS NULL)",
+    )
+    .bind(customer_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !exists {
+        return Err(DataError::Other("active customer not found".into()));
     }
     Ok(())
+}
+
+fn date_parts(value: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = value.split('-');
+    let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || year.len() != 4 || month.len() != 2 || day.len() != 2 {
+        return None;
+    }
+    let (year, month, day) = (year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    (year > 0 && (1..=max_day).contains(&day)).then_some((year, month, day))
+}
+
+async fn next_occurrence(
+    conn: &mut sqlx::SqliteConnection,
+    current: &str,
+    frequency: &str,
+    anchor_day: i64,
+) -> Result<String, DataError> {
+    let day_modifier = match frequency {
+        "weekly" => Some("+7 days"),
+        "fortnightly" => Some("+14 days"),
+        _ => None,
+    };
+    if let Some(modifier) = day_modifier {
+        return sqlx::query_scalar::<_, Option<String>>("SELECT date(?, ?)")
+            .bind(current)
+            .bind(modifier)
+            .fetch_one(&mut *conn)
+            .await?
+            .ok_or_else(|| DataError::Other("could not advance recurring date".into()));
+    }
+
+    let months = match frequency {
+        "monthly" => 1,
+        "quarterly" => 3,
+        "yearly" => 12,
+        other => return Err(DataError::Other(format!("unknown frequency '{other}'"))),
+    };
+    let modifier = format!("+{months} months");
+    sqlx::query_scalar::<_, Option<String>>(
+        "WITH target AS ( \
+           SELECT date(?1, 'start of month', ?2) AS first_day, \
+                  CAST(strftime('%d', date(?1, 'start of month', ?2, '+1 month', '-1 day')) AS INTEGER) AS last_day \
+         ) \
+         SELECT date(first_day, printf('+%d days', MIN(?3, last_day) - 1)) FROM target",
+    )
+    .bind(current)
+    .bind(modifier)
+    .bind(anchor_day.clamp(1, 31))
+    .fetch_one(&mut *conn)
+    .await?
+    .ok_or_else(|| DataError::Other("could not advance recurring date".into()))
 }
 
 async fn insert_lines(
@@ -96,7 +195,7 @@ async fn insert_lines(
     lines: &[LineInput],
 ) -> Result<(), DataError> {
     for (i, l) in lines.iter().enumerate() {
-        to_doc_line(l)?; // validate quantity parses before storing the template
+        let line = to_doc_line(l)?;
         sqlx::query(
             "INSERT INTO recurring_invoice_line (recurring_id, item_id, description, quantity, \
              unit_price_minor, tax_rate_name, tax_rate_bp, tax_inclusive, line_order) \
@@ -104,10 +203,10 @@ async fn insert_lines(
         )
         .bind(recurring_id)
         .bind(l.item_id)
-        .bind(&l.description)
-        .bind(&l.quantity)
+        .bind(&line.description)
+        .bind(line.quantity.normalize().to_string())
         .bind(l.unit_price_minor)
-        .bind(&l.tax_rate_name)
+        .bind(&line.tax_rate.name)
         .bind(l.tax_rate_bp)
         .bind(l.tax_inclusive)
         .bind(i as i64)
@@ -123,17 +222,21 @@ pub async fn create(
     lines: &[LineInput],
 ) -> Result<i64, DataError> {
     validate(input, lines)?;
+    let anchor_day = i64::from(date_parts(&input.next_date).expect("validated date").2);
     let mut tx = db.begin().await?;
+    ensure_active_customer(&mut tx, input.customer_id).await?;
+    validate_line_items(&mut tx, lines).await?;
     let id = sqlx::query(
-        "INSERT INTO recurring_invoice (customer_id, frequency, next_date, end_date, due_days, notes) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO recurring_invoice (customer_id, frequency, next_date, end_date, due_days, anchor_day, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.customer_id)
     .bind(&input.frequency)
     .bind(&input.next_date)
     .bind(&input.end_date)
     .bind(input.due_days)
-    .bind(&input.notes)
+    .bind(anchor_day)
+    .bind(input.notes.trim())
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -149,17 +252,21 @@ pub async fn update(
     lines: &[LineInput],
 ) -> Result<(), DataError> {
     validate(input, lines)?;
+    let anchor_day = i64::from(date_parts(&input.next_date).expect("validated date").2);
     let mut tx = db.begin().await?;
+    ensure_active_customer(&mut tx, input.customer_id).await?;
+    validate_line_items(&mut tx, lines).await?;
     let updated = sqlx::query(
         "UPDATE recurring_invoice SET customer_id = ?, frequency = ?, next_date = ?, end_date = ?, \
-         due_days = ?, notes = ? WHERE id = ?",
+         due_days = ?, anchor_day = ?, notes = ? WHERE id = ?",
     )
     .bind(input.customer_id)
     .bind(&input.frequency)
     .bind(&input.next_date)
     .bind(&input.end_date)
     .bind(input.due_days)
-    .bind(&input.notes)
+    .bind(anchor_day)
+    .bind(input.notes.trim())
     .bind(id)
     .execute(&mut *tx)
     .await?
@@ -196,10 +303,14 @@ pub async fn delete(db: &Db, id: i64) -> Result<(), DataError> {
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM recurring_invoice WHERE id = ?")
+    let deleted = sqlx::query("DELETE FROM recurring_invoice WHERE id = ?")
         .bind(id)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+    if deleted != 1 {
+        return Err(DataError::Other("schedule not found".into()));
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -214,7 +325,7 @@ async fn lines_for(db: &Db, id: i64) -> Result<Vec<RecurringLineRow>, DataError>
     .await?)
 }
 
-fn template_total(lines: &[RecurringLineRow]) -> i64 {
+fn template_total(lines: &[RecurringLineRow]) -> Result<i64, DataError> {
     let inputs: Vec<LineInput> = lines
         .iter()
         .map(|l| LineInput {
@@ -227,13 +338,12 @@ fn template_total(lines: &[RecurringLineRow]) -> i64 {
             tax_inclusive: l.tax_inclusive,
         })
         .collect();
-    let doc_lines: Vec<_> = inputs.iter().filter_map(|l| to_doc_line(l).ok()).collect();
-    total_lines(&doc_lines).total.minor()
+    Ok(validated_totals(&inputs)?.total.minor())
 }
 
 pub async fn list(db: &Db) -> Result<Vec<RecurringListRow>, DataError> {
     let schedules = sqlx::query_as::<_, RecurringInvoice>(
-        "SELECT id, customer_id, frequency, next_date, end_date, due_days, notes, active, \
+        "SELECT id, customer_id, frequency, next_date, end_date, due_days, anchor_day, notes, active, \
          created_at FROM recurring_invoice ORDER BY next_date, id",
     )
     .fetch_all(db)
@@ -242,7 +352,7 @@ pub async fn list(db: &Db) -> Result<Vec<RecurringListRow>, DataError> {
     for schedule in schedules {
         let lines = lines_for(db, schedule.id).await?;
         rows.push(RecurringListRow {
-            total_minor: template_total(&lines),
+            total_minor: template_total(&lines)?,
             schedule,
         });
     }
@@ -251,7 +361,7 @@ pub async fn list(db: &Db) -> Result<Vec<RecurringListRow>, DataError> {
 
 pub async fn get_detail(db: &Db, id: i64) -> Result<Option<RecurringDetail>, DataError> {
     let schedule = sqlx::query_as::<_, RecurringInvoice>(
-        "SELECT id, customer_id, frequency, next_date, end_date, due_days, notes, active, \
+        "SELECT id, customer_id, frequency, next_date, end_date, due_days, anchor_day, notes, active, \
          created_at FROM recurring_invoice WHERE id = ?",
     )
     .bind(id)
@@ -268,6 +378,11 @@ pub async fn get_detail(db: &Db, id: i64) -> Result<Option<RecurringDetail>, Dat
 /// One transaction per generated draft: the draft and the advanced `next_date` commit together.
 /// Returns the created invoice ids.
 pub async fn run_due(db: &Db, today: &str) -> Result<Vec<i64>, DataError> {
+    if date_parts(today).is_none() {
+        return Err(DataError::Other(
+            "run date must be a valid YYYY-MM-DD date".into(),
+        ));
+    }
     let due_ids: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM recurring_invoice WHERE active = 1 AND next_date <= ? ORDER BY id",
     )
@@ -307,9 +422,38 @@ pub async fn run_due(db: &Db, today: &str) -> Result<Vec<i64>, DataError> {
                     tax_inclusive: l.tax_inclusive,
                 })
                 .collect();
-            let modifier = frequency_modifier(&s.frequency)?;
+            frequency_modifier(&s.frequency)?;
+
+            if created.len() >= 10_000 {
+                return Err(DataError::Other(
+                    "recurring catch-up exceeded 10,000 invoices; move the schedule start date forward"
+                        .into(),
+                ));
+            }
+
+            // Calculate first, then atomically advance the still-expected date as the transaction's
+            // first write. A concurrent run can claim a period only once; all other work rolls back
+            // with this advance if draft creation fails.
+            let next = {
+                let mut conn = db.acquire().await?;
+                next_occurrence(&mut conn, &s.next_date, &s.frequency, s.anchor_day).await?
+            };
 
             let mut tx = db.begin().await?;
+            let claimed = sqlx::query(
+                "UPDATE recurring_invoice SET next_date = ? \
+                 WHERE id = ? AND active = 1 AND next_date = ?",
+            )
+            .bind(&next)
+            .bind(id)
+            .bind(&s.next_date)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if claimed != 1 {
+                tx.rollback().await?;
+                continue;
+            }
             let due_date: Option<String> = match s.due_days {
                 Some(days) => Some(
                     sqlx::query_scalar("SELECT date(?, ?)")
@@ -328,16 +472,6 @@ pub async fn run_due(db: &Db, today: &str) -> Result<Vec<i64>, DataError> {
                 &s.notes,
             )
             .await?;
-            let next: String = sqlx::query_scalar("SELECT date(?, ?)")
-                .bind(&s.next_date)
-                .bind(modifier)
-                .fetch_one(&mut *tx)
-                .await?;
-            sqlx::query("UPDATE recurring_invoice SET next_date = ? WHERE id = ?")
-                .bind(&next)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
             tx.commit().await?;
             created.push(invoice_id);
         }
@@ -480,6 +614,64 @@ mod tests {
         )
         .await
         .is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn month_end_anchor_survives_short_months_and_leap_years(
+        pool: Db,
+    ) -> Result<(), DataError> {
+        let customer = seed_customer(&pool).await;
+        let monthly = create(
+            &pool,
+            &RecurringInput {
+                customer_id: customer,
+                frequency: "monthly".into(),
+                next_date: "2026-01-31".into(),
+                end_date: None,
+                due_days: Some(0),
+                notes: String::new(),
+            },
+            &[line(1000)],
+        )
+        .await?;
+
+        let made = run_due(&pool, "2026-04-30").await?;
+        assert_eq!(made.len(), 4, "Jan, Feb, Mar and Apr should each generate");
+        let detail = get_detail(&pool, monthly).await?.unwrap();
+        assert_eq!(detail.schedule.anchor_day, 31);
+        assert_eq!(detail.schedule.next_date, "2026-05-31");
+        set_active(&pool, monthly, false).await?;
+
+        let yearly = create(
+            &pool,
+            &RecurringInput {
+                customer_id: customer,
+                frequency: "yearly".into(),
+                next_date: "2024-02-29".into(),
+                end_date: None,
+                due_days: None,
+                notes: String::new(),
+            },
+            &[line(1000)],
+        )
+        .await?;
+        let made = run_due(&pool, "2027-03-01").await?;
+        assert_eq!(made.len(), 4, "2024 through 2027 should each generate");
+        assert_eq!(
+            get_detail(&pool, yearly).await?.unwrap().schedule.next_date,
+            "2028-02-29"
+        );
+
+        let invalid = RecurringInput {
+            customer_id: customer,
+            frequency: "monthly".into(),
+            next_date: "2027-02-29".into(),
+            end_date: None,
+            due_days: None,
+            notes: String::new(),
+        };
+        assert!(create(&pool, &invalid, &[line(1000)]).await.is_err());
         Ok(())
     }
 }

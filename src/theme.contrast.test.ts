@@ -5,20 +5,20 @@ import { wcagContrast } from "culori";
 // contrast (≥4.5:1 for normal text) in BOTH themes — the check jsdom + axe cannot perform.
 const T = {
   light: {
-    background: "oklch(1 0 0)",
+    background: "oklch(0.982 0.005 255)",
     foreground: "oklch(0.145 0 0)",
     primary: "oklch(0.546 0.182 256)",
     primaryFg: "oklch(0.985 0 0)",
     secondary: "oklch(0.97 0 0)",
     secondaryFg: "oklch(0.205 0 0)",
-    mutedFg: "oklch(0.556 0 0)",
+    mutedFg: "oklch(0.55 0 0)",
     destructive: "oklch(0.577 0.245 27.325)",
     destructiveFg: "oklch(0.985 0 0)",
     success: "oklch(0.5 0.14 150)",
     white: "#ffffff",
   },
   dark: {
-    background: "oklch(0.145 0 0)",
+    background: "oklch(0.135 0.008 255)",
     foreground: "oklch(0.985 0 0)",
     primary: "oklch(0.685 0.169 256)",
     primaryFg: "oklch(0.145 0 0)",

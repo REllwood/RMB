@@ -6,11 +6,22 @@ version = 2
 yanked = "deny"
 # Avoid CI breaking on a deeply-transitive unmaintained crate we don't control.
 unmaintained = "workspace"
+# Reachability-reviewed exceptions. They must be re-reviewed whenever Typst or rust_decimal is updated,
+# and removed before any feature that accepts the affected input ships.
+#
+# RUSTSEC-2026-0194 / RUSTSEC-2026-0195: typst -> hayagriva -> citationberg -> quick-xml 0.38.4.
+#   Both need attacker-controlled XML. RMB compiles one embedded Typst template with JSON inputs and
+#   has no bibliography, XML import or user-template feature. Remove once Typst accepts
+#   quick-xml >= 0.41.
+# RUSTSEC-2026-0235 (ignored in the `cargo audit` CI step only): rust_decimal's optional rkyv 0.7
+#   lockfile entry. The rkyv feature is not enabled (`cargo tree -i rkyv` is empty) and RMB never
+#   reads rkyv archives.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [licenses]
 version = 2
 # Allow-list only — a dependency with an unlisted licence fails the build (intentional).
-# RMB ships under GPL-3.0-or-later; all current deps are permissive (MIT/Apache/BSD/ISC/…).
+# RMB ships under GPL-3.0-or-later; current third-party licences are explicitly allowed below.
 allow = [
   "GPL-3.0-or-later", # RMB's own crates
   "MIT",
@@ -18,7 +29,6 @@ allow = [
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
-  "ISC",
   "Unicode-3.0",
   "Zlib",
   "CC0-1.0",

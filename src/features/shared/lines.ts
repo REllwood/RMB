@@ -1,4 +1,4 @@
-import type { LineInput, TaxRate } from "@/lib/types";
+import type { Item, LineInput, TaxRate } from "@/lib/types";
 import { minorToInput, parseMoney } from "@/lib/money";
 
 /** Tax applied to a line — carried by value so archived/legacy rates survive editing. */
@@ -13,6 +13,12 @@ export type EditLine = {
   quantity: string;
   price: string; // major units while editing, e.g. "12.50"
   tax: TaxChoice;
+};
+
+export type LineIssue = {
+  description?: string;
+  quantity?: string;
+  price?: string;
 };
 
 export const taxKey = (t: TaxChoice) => `${t.name}|${t.bp}|${t.inclusive ? 1 : 0}`;
@@ -54,17 +60,50 @@ export function fromRows(
   }));
 }
 
-/** Convert editor state to the backend payload, dropping empty lines. */
+export function normaliseQuantity(value: string): string | null {
+  const normalised = value.trim().replace(",", ".");
+  if (!/^\d+(?:\.\d+)?$/.test(normalised)) return null;
+  const numeric = Number(normalised);
+  if (!Number.isFinite(numeric) || numeric <= 0 || numeric > 1_000_000_000) return null;
+  return normalised;
+}
+
+/** Validate editable rows before an IPC call; the Rust boundary repeats these checks. */
+export function validateEditLines(lines: EditLine[], items: Item[] = []): LineIssue[] {
+  return lines.map((line) => {
+    const quantity = normaliseQuantity(line.quantity);
+    const price = parseMoney(line.price);
+    const item =
+      line.item_id === null ? undefined : items.find((candidate) => candidate.id === line.item_id);
+    return {
+      description: !line.description.trim()
+        ? "Description is required"
+        : line.description.trim().length > 2_000
+          ? "Description cannot exceed 2,000 characters"
+          : undefined,
+      quantity:
+        quantity === null
+          ? "Enter a quantity greater than zero"
+          : item?.tracked && !Number.isInteger(Number(quantity))
+            ? "Tracked products need a whole quantity"
+            : undefined,
+      price:
+        price === null || price < 0
+          ? "Enter a valid non-negative price with no more than two decimal places"
+          : undefined,
+    };
+  });
+}
+
+/** Convert validated editor state to the backend payload. Invalid values fail closed. */
 export function toLineInputs(lines: EditLine[]): LineInput[] {
-  return lines
-    .filter((l) => l.description.trim())
-    .map((l) => ({
-      item_id: l.item_id,
-      description: l.description.trim(),
-      quantity: l.quantity.trim() || "1",
-      unit_price_minor: parseMoney(l.price) ?? 0,
-      tax_rate_name: l.tax.name,
-      tax_rate_bp: l.tax.bp,
-      tax_inclusive: l.tax.inclusive,
-    }));
+  return lines.map((l) => ({
+    item_id: l.item_id,
+    description: l.description.trim(),
+    quantity: normaliseQuantity(l.quantity) ?? "0",
+    unit_price_minor: parseMoney(l.price) ?? -1,
+    tax_rate_name: l.tax.name,
+    tax_rate_bp: l.tax.bp,
+    tax_inclusive: l.tax.inclusive,
+  }));
 }

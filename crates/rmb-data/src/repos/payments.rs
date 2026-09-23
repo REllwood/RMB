@@ -1,4 +1,4 @@
-//! Payments + allocations. Recording a payment allocates (clamped to outstanding), then derives
+//! Payments + allocations. Recording a payment allocates against the outstanding balance, then derives
 //! and stores the invoice's payment status (issued → part_paid → paid).
 
 use rmb_domain::status::payment_status;
@@ -18,9 +18,9 @@ pub struct Payment {
     pub reference: String,
 }
 
-/// Record a payment against an invoice. The allocated amount is clamped to the outstanding
-/// balance (overpayment is recorded on the payment but not over-allocated). Returns the amount
-/// actually allocated. Recomputes + stores the invoice status.
+/// Record a payment against an invoice. Overpayments are rejected because v1 has no customer-credit
+/// ledger; silently keeping an unallocated remainder would make receipts and cash reports disagree.
+/// Returns the allocated amount and recomputes the invoice status.
 pub async fn record_payment(
     db: &Db,
     invoice_id: i64,
@@ -31,10 +31,23 @@ pub async fn record_payment(
     if amount_minor <= 0 {
         return Err(DataError::Other("payment amount must be positive".into()));
     }
+    let method = method.trim();
+    let reference = reference.trim();
+    if method.is_empty() {
+        return Err(DataError::Other("payment method is required".into()));
+    }
+    if method.chars().count() > 100 || reference.chars().count() > 500 {
+        return Err(DataError::Other(
+            "payment method or reference is too long".into(),
+        ));
+    }
     let mut tx = db.begin().await?;
 
+    // A harmless update is deliberately the first operation: it takes SQLite's write lock before
+    // the outstanding balance is read, serialising simultaneous payment attempts for this file.
     let (status, total, customer_id) = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT status, total_minor, customer_id FROM invoice WHERE id = ?",
+        "UPDATE invoice SET status = status WHERE id = ? \
+         RETURNING status, total_minor, customer_id",
     )
     .bind(invoice_id)
     .fetch_optional(&mut *tx)
@@ -56,7 +69,12 @@ pub async fn record_payment(
             "invoice has no outstanding balance".into(),
         ));
     }
-    let alloc = amount_minor.min(outstanding); // clamp overpayment; always > 0 here
+    if amount_minor > outstanding {
+        return Err(DataError::Other(format!(
+            "payment exceeds the outstanding balance (maximum is {outstanding} minor units)"
+        )));
+    }
+    let alloc = amount_minor;
 
     // `localtime`: the payment date is a business-facing date on the user's machine, not a UTC
     // audit stamp — UTC would show "yesterday" for morning payments east of Greenwich.
@@ -89,6 +107,11 @@ pub async fn record_payment(
     .bind(invoice_id)
     .fetch_one(&mut *tx)
     .await?;
+    if total_allocated > total {
+        return Err(DataError::Other(
+            "payment allocations exceed the invoice total".into(),
+        ));
+    }
     let new_status = payment_status(Money::from_minor(total), Money::from_minor(total_allocated));
     sqlx::query("UPDATE invoice SET status = ? WHERE id = ? AND status != 'void'")
         .bind(new_status.as_db())
@@ -168,9 +191,12 @@ pub async fn list_for_invoice(db: &Db, invoice_id: i64) -> Result<Vec<Payment>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repos::{customers, invoices};
+    use crate::repos::{customers, invoices, settings};
 
     async fn issued_invoice(db: &Db, total_each: i64) -> i64 {
+        let mut business = settings::get(db).await.unwrap();
+        business.business_name = "Test business".into();
+        settings::update(db, &business).await.unwrap();
         let customer = customers::create(
             db,
             &customers::CustomerInput {
@@ -227,18 +253,13 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn overpayment_is_clamped(pool: Db) -> Result<(), DataError> {
+    async fn overpayment_is_rejected_without_recording_cash(pool: Db) -> Result<(), DataError> {
         let inv = issued_invoice(&pool, 5000).await;
-        let allocated = record_payment(&pool, inv, 9999, "cash", "").await?;
-        assert_eq!(allocated, 5000); // clamped to outstanding
-        assert_eq!(
-            invoices::get_detail(&pool, inv)
-                .await?
-                .unwrap()
-                .invoice
-                .status,
-            "paid"
-        );
+        assert!(record_payment(&pool, inv, 9999, "cash", "").await.is_err());
+        let detail = invoices::get_detail(&pool, inv).await?.unwrap();
+        assert_eq!(detail.invoice.status, "issued");
+        assert_eq!(detail.amount_paid_minor, 0);
+        assert!(list_for_invoice(&pool, inv).await?.is_empty());
         Ok(())
     }
 

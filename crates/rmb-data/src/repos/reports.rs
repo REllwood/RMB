@@ -8,6 +8,25 @@ use sqlx::FromRow;
 
 use crate::db::Db;
 use crate::error::DataError;
+use crate::validation::valid_business_date;
+
+fn validate_range(from: Option<&str>, to: Option<&str>) -> Result<(), DataError> {
+    if from.is_some_and(|date| !valid_business_date(date))
+        || to.is_some_and(|date| !valid_business_date(date))
+    {
+        return Err(DataError::Other(
+            "report dates must use valid YYYY-MM-DD values".into(),
+        ));
+    }
+    if let (Some(from), Some(to)) = (from, to) {
+        if from > to {
+            return Err(DataError::Other(
+                "report start date cannot be after the end date".into(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct TaxSummaryRow {
@@ -42,6 +61,7 @@ pub async fn tax_summary(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<TaxSummaryRow>, DataError> {
+    validate_range(from, to)?;
     Ok(sqlx::query_as::<_, TaxSummaryRow>(
         "SELECT l.tax_rate_name, l.tax_rate_bp, \
          COALESCE(SUM(l.net_minor), 0) AS net_minor, \
@@ -65,6 +85,7 @@ pub async fn sales_by_month(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<MonthlySalesRow>, DataError> {
+    validate_range(from, to)?;
     Ok(sqlx::query_as::<_, MonthlySalesRow>(
         "SELECT substr(i.issue_date, 1, 7) AS month, COUNT(*) AS invoice_count, \
          COALESCE(SUM(i.subtotal_minor), 0) AS net_minor, \
@@ -87,6 +108,7 @@ pub async fn sales_by_customer(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<CustomerSalesRow>, DataError> {
+    validate_range(from, to)?;
     Ok(sqlx::query_as::<_, CustomerSalesRow>(
         "SELECT i.customer_id, COALESCE(c.name, '(removed)') AS name, COUNT(*) AS invoice_count, \
          COALESCE(SUM(i.total_minor), 0) AS gross_minor, \
@@ -126,6 +148,7 @@ pub async fn invoice_export_rows(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<InvoiceExportRow>, DataError> {
+    validate_range(from, to)?;
     let base_select = if from.is_none() && to.is_none() {
         "SELECT i.id, i.number, COALESCE(c.name, '(removed)') AS customer, i.status, \
          i.issue_date, i.due_date, i.subtotal_minor, i.tax_minor, i.total_minor, \
@@ -167,6 +190,7 @@ pub async fn payment_export_rows(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<PaymentExportRow>, DataError> {
+    validate_range(from, to)?;
     Ok(sqlx::query_as::<_, PaymentExportRow>(
         "SELECT p.date, a.amount_minor, p.method, p.reference, i.number AS invoice_number, \
          COALESCE(c.name, '(removed)') AS customer \
@@ -187,7 +211,7 @@ pub async fn payment_export_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repos::{customers, invoices, payments};
+    use crate::repos::{customers, invoices, payments, settings};
 
     async fn seed_invoice(db: &Db, customer: i64, price: i64, bp: i64, issue: bool) -> i64 {
         let inv = invoices::create_draft(
@@ -219,6 +243,9 @@ mod tests {
 
     #[sqlx::test]
     async fn aggregates_count_only_issued_documents(pool: Db) -> Result<(), DataError> {
+        let mut business = settings::get(&pool).await?;
+        business.business_name = "Test business".into();
+        settings::update(&pool, &business).await?;
         let c = customers::create(
             &pool,
             &customers::CustomerInput {
@@ -277,6 +304,12 @@ mod tests {
         assert_eq!(pays.len(), 1);
         assert_eq!(pays[0].customer, "Acme");
         assert_eq!(pays[0].amount_minor, 2000);
+        assert!(sales_by_month(&pool, Some("2026-02-29"), None)
+            .await
+            .is_err());
+        assert!(tax_summary(&pool, Some("2026-12-01"), Some("2026-01-01"))
+            .await
+            .is_err());
         Ok(())
     }
 }

@@ -1,11 +1,4 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, XCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -34,6 +27,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={push}>
       {children}
       <div
+        role="region"
         aria-label="Notifications"
         className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
       >

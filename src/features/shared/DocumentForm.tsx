@@ -8,9 +8,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
 import { LineEditor } from "@/features/shared/LineEditor";
-import { emptyLine, toLineInputs, type EditLine } from "@/features/shared/lines";
+import {
+  emptyLine,
+  normaliseQuantity,
+  toLineInputs,
+  validateEditLines,
+  type EditLine,
+} from "@/features/shared/lines";
 
 export type DocumentInitial = {
   id: number;
@@ -52,7 +59,12 @@ export function DocumentForm({
   const invalidate = detailKey ? [listKey, detailKey] : [listKey];
 
   const save = useIpcMutation(
-    async (v: { customerId: number; lines: ReturnType<typeof toLineInputs>; date: string | null; notes: string }) => {
+    async (v: {
+      customerId: number;
+      lines: ReturnType<typeof toLineInputs>;
+      date: string | null;
+      notes: string;
+    }) => {
       if (initial) {
         if (isInvoice)
           await ipc.updateInvoiceDraft(initial.id, v.customerId, v.lines, v.date, v.notes);
@@ -68,8 +80,14 @@ export function DocumentForm({
   );
 
   if (customersQ.isLoading || taxQ.isLoading || itemsQ.isLoading) return <Loading />;
-  if (customersQ.error)
-    return <ErrorState error={customersQ.error} onRetry={() => customersQ.refetch()} />;
+  const loadError = customersQ.error ?? taxQ.error ?? itemsQ.error;
+  if (loadError)
+    return (
+      <ErrorState
+        error={loadError}
+        onRetry={() => Promise.all([customersQ.refetch(), taxQ.refetch(), itemsQ.refetch()])}
+      />
+    );
   if (customersQ.data && customersQ.data.length === 0)
     return (
       <EmptyState
@@ -81,16 +99,25 @@ export function DocumentForm({
   const taxes = taxQ.data ?? [];
   const items = itemsQ.data ?? [];
   const lines = edited ?? [emptyLine(taxes)];
+  const lineIssues = validateEditLines(lines, items);
+  const hasLineIssues = lineIssues.some(
+    (issue) => issue.description || issue.quantity || issue.price,
+  );
   const payload = toLineInputs(lines);
   const netPreview = lines.reduce(
-    (sum, l) => sum + Math.round((parseMoney(l.price) ?? 0) * (Number(l.quantity) || 0)),
+    (sum, l) =>
+      sum + Math.round((parseMoney(l.price) ?? 0) * Number(normaliseQuantity(l.quantity) ?? 0)),
     0,
   );
 
   async function onSave() {
-    if (customerId === null || payload.length === 0) return;
-    const id = await save.mutateAsync({ customerId, lines: payload, date: date || null, notes });
-    onSaved(id);
+    if (customerId === null || payload.length === 0 || hasLineIssues) return;
+    try {
+      const id = await save.mutateAsync({ customerId, lines: payload, date: date || null, notes });
+      onSaved(id);
+    } catch {
+      // useIpcMutation has already shown the backend error.
+    }
   }
 
   return (
@@ -123,7 +150,9 @@ export function DocumentForm({
             )}
           </Field>
           <Field label={isInvoice ? "Due date" : "Valid until"}>
-            {(p) => <Input {...p} type="date" value={date} onChange={(e) => setDate(e.target.value)} />}
+            {(p) => (
+              <Input {...p} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            )}
           </Field>
         </div>
 
@@ -133,6 +162,7 @@ export function DocumentForm({
           taxes={taxes}
           items={items}
           idPrefix={kind}
+          issues={lineIssues}
         />
 
         <div className="flex items-center justify-end">
@@ -143,12 +173,17 @@ export function DocumentForm({
         </div>
 
         <Field label="Notes">
-          {(p) => <Input {...p} value={notes} onChange={(e) => setNotes(e.target.value)} />}
+          {(p) => <Textarea {...p} value={notes} onChange={(e) => setNotes(e.target.value)} />}
         </Field>
 
         <div className="flex gap-2">
-          <Button onClick={onSave} disabled={customerId === null || payload.length === 0 || save.isPending}>
-            {save.isPending ? "Saving…" : initial ? "Save changes" : `Save draft`}
+          <Button
+            onClick={onSave}
+            disabled={customerId === null || payload.length === 0 || hasLineIssues}
+            loading={save.isPending}
+            loadingLabel="Saving…"
+          >
+            {initial ? "Save changes" : "Save draft"}
           </Button>
           {onCancel && (
             <Button variant="ghost" onClick={onCancel}>

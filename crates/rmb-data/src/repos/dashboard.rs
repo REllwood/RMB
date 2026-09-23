@@ -71,10 +71,13 @@ pub async fn summary(db: &Db) -> Result<DashboardSummary, DataError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repos::{customers, invoices, payments};
+    use crate::repos::{customers, invoices, payments, settings};
 
     #[sqlx::test]
     async fn summary_counts_outstanding(pool: Db) -> Result<(), DataError> {
+        let mut business = settings::get(&pool).await?;
+        business.business_name = "Test business".into();
+        settings::update(&pool, &business).await?;
         let c = customers::create(
             &pool,
             &customers::CustomerInput {

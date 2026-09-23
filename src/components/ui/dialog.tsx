@@ -99,23 +99,27 @@ export function ConfirmDialog({
   destructive?: boolean;
   pending?: boolean;
 }) {
+  const close = () => {
+    if (!pending) onClose();
+  };
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={close}
       title={title}
       description={description}
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={close} disabled={pending}>
             Cancel
           </Button>
           <Button
             variant={destructive ? "destructive" : "default"}
             onClick={onConfirm}
-            disabled={pending}
+            loading={pending}
+            loadingLabel="Working…"
           >
-            {pending ? "Working…" : confirmLabel}
+            {confirmLabel}
           </Button>
         </>
       }

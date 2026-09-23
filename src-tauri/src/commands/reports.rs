@@ -45,6 +45,18 @@ fn csv_field(s: &str) -> String {
     }
 }
 
+/// Keep user-entered text from becoming a spreadsheet formula when the CSV is opened. The leading
+/// apostrophe is Excel/LibreOffice's explicit text marker. Numeric amount cells bypass this helper.
+fn csv_text(s: impl Into<String>) -> String {
+    let value = s.into();
+    let first = value.trim_start().chars().next();
+    if matches!(first, Some('=' | '+' | '-' | '@')) {
+        format!("'{value}")
+    } else {
+        value
+    }
+}
+
 fn csv_line(fields: &[String]) -> String {
     fields
         .iter()
@@ -61,7 +73,9 @@ fn csv_amount(minor: i64) -> String {
 }
 
 fn write_csv(dest: &str, header: &[&str], rows: Vec<Vec<String>>) -> Result<(), AppError> {
-    let mut out = String::new();
+    // UTF-8 BOM makes non-ASCII customer names open correctly in Windows Excel without an import
+    // wizard. Rows otherwise use RFC-4180 quoting and CRLF line endings.
+    let mut out = String::from('\u{FEFF}');
     out.push_str(&csv_line(
         &header.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
     ));
@@ -86,8 +100,8 @@ pub async fn export_invoices_csv(
         .into_iter()
         .map(|r| {
             vec![
-                r.number.unwrap_or_else(|| format!("Draft #{}", r.id)),
-                r.customer,
+                csv_text(r.number.unwrap_or_else(|| format!("Draft #{}", r.id))),
+                csv_text(r.customer),
                 r.status,
                 r.issue_date.unwrap_or_default(),
                 r.due_date.unwrap_or_default(),
@@ -131,10 +145,10 @@ pub async fn export_payments_csv(
             vec![
                 r.date,
                 csv_amount(r.amount_minor),
-                r.method,
-                r.reference,
-                r.invoice_number.unwrap_or_default(),
-                r.customer,
+                csv_text(r.method),
+                csv_text(r.reference),
+                csv_text(r.invoice_number.unwrap_or_default()),
+                csv_text(r.customer),
             ]
         })
         .collect();
@@ -159,11 +173,11 @@ pub async fn export_customers_csv(db: State<'_, Db>, dest: String) -> Result<(),
         .into_iter()
         .map(|c| {
             vec![
-                c.name,
-                c.email,
-                c.phone,
-                c.billing_address,
-                c.notes,
+                csv_text(c.name),
+                csv_text(c.email),
+                csv_text(c.phone),
+                csv_text(c.billing_address),
+                csv_text(c.notes),
                 c.created_at,
             ]
         })
@@ -192,6 +206,9 @@ mod tests {
         assert_eq!(csv_field("has,comma"), "\"has,comma\"");
         assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(csv_field("line\nbreak"), "\"line\nbreak\"");
+        assert_eq!(csv_text("=1+1"), "'=1+1");
+        assert_eq!(csv_text("  @SUM(A1:A2)"), "'  @SUM(A1:A2)");
+        assert_eq!(csv_text("ordinary text"), "ordinary text");
         assert_eq!(csv_line(&["a,b".into(), "c".into()]), "\"a,b\",c");
         assert_eq!(csv_amount(12345), "123.45");
         assert_eq!(csv_amount(5), "0.05");

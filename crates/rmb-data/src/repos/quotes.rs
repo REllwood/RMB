@@ -1,7 +1,6 @@
 //! Quote (estimate) repository. Mirrors invoices (no stock/payments). A quote can convert into a
 //! draft invoice, copying its lines and linking both directions.
 
-use rmb_domain::document::total_lines;
 use rmb_domain::numbering::format_number;
 use rmb_domain::status::QuoteStatus;
 use rmb_domain::tax::line_tax;
@@ -10,7 +9,9 @@ use sqlx::FromRow;
 
 use crate::db::Db;
 use crate::error::DataError;
-use crate::repos::invoices::{self, to_doc_line, LineInput};
+use crate::repos::invoices::{
+    self, to_doc_line, validate_draft_metadata, validate_line_items, validated_totals, LineInput,
+};
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct QuoteRow {
@@ -46,6 +47,7 @@ pub struct QuoteLineRow {
 pub struct QuoteDetail {
     pub quote: QuoteRow,
     pub lines: Vec<QuoteLineRow>,
+    pub tax_summary: String,
 }
 
 pub async fn create_draft(
@@ -58,14 +60,13 @@ pub async fn create_draft(
     if lines.is_empty() {
         return Err(DataError::Other("a quote needs at least one line".into()));
     }
-    let doc_lines = lines
-        .iter()
-        .map(to_doc_line)
-        .collect::<Result<Vec<_>, _>>()?;
-    let totals = total_lines(&doc_lines);
+    let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
     let mut tx = db.begin().await?;
+    validate_draft_metadata(&mut tx, customer_id, valid_until, "valid-until date", notes).await?;
+    validate_line_items(&mut tx, lines).await?;
+    let valid_until = valid_until.map(str::trim);
     // Quotes are estimates: a number is assigned now from the quote counter. Unlike invoices, quote
     // numbering is intentionally **not** gapless — deleting/abandoning a draft can leave a gap.
     // (Legally-gapless invoice numbers are assigned only at issue.)
@@ -116,10 +117,10 @@ async fn insert_lines(
         )
         .bind(quote_id)
         .bind(l.item_id)
-        .bind(&l.description)
-        .bind(&l.quantity)
+        .bind(&dl.description)
+        .bind(dl.quantity.normalize().to_string())
         .bind(l.unit_price_minor)
-        .bind(&l.tax_rate_name)
+        .bind(&dl.tax_rate.name)
         .bind(l.tax_rate_bp)
         .bind(l.tax_inclusive)
         .bind(lt.net.minor())
@@ -145,28 +146,25 @@ pub async fn update_draft(
     if lines.is_empty() {
         return Err(DataError::Other("a quote needs at least one line".into()));
     }
-    let doc_lines = lines
-        .iter()
-        .map(to_doc_line)
-        .collect::<Result<Vec<_>, _>>()?;
-    let totals = total_lines(&doc_lines);
+    let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
     let mut tx = db.begin().await?;
-    let status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM quote WHERE id = ? AND deleted_at IS NULL")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    match status.as_deref() {
-        None => return Err(DataError::Other("quote not found".into())),
-        Some("draft") => {}
-        Some(s) => {
-            return Err(DataError::Other(format!(
-                "only draft quotes can be edited (this one is {s})"
-            )))
-        }
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "UPDATE quote SET status = status \
+         WHERE id = ? AND deleted_at IS NULL AND status = 'draft' RETURNING id",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if claimed.is_none() {
+        return Err(DataError::Other(
+            "only draft quotes can be edited (pull a sent quote back to draft first)".into(),
+        ));
     }
+    validate_draft_metadata(&mut tx, customer_id, valid_until, "valid-until date", notes).await?;
+    validate_line_items(&mut tx, lines).await?;
+    let valid_until = valid_until.map(str::trim);
 
     sqlx::query(
         "UPDATE quote SET customer_id = ?, valid_until = ?, notes = ?, subtotal_minor = ?, \
@@ -229,7 +227,15 @@ pub async fn get_detail(db: &Db, id: i64) -> Result<Option<QuoteDetail>, DataErr
     .bind(id)
     .fetch_all(db)
     .await?;
-    Ok(Some(QuoteDetail { quote, lines }))
+    let tax_summary: String = sqlx::query_scalar("SELECT tax_summary FROM quote WHERE id = ?")
+        .bind(id)
+        .fetch_one(db)
+        .await?;
+    Ok(Some(QuoteDetail {
+        quote,
+        lines,
+        tax_summary,
+    }))
 }
 
 pub async fn set_status(db: &Db, id: i64, to: &str) -> Result<(), DataError> {
@@ -248,40 +254,78 @@ pub async fn set_status(db: &Db, id: i64, to: &str) -> Result<(), DataError> {
             "cannot move a quote from {current} to {to}"
         )));
     }
-    sqlx::query("UPDATE quote SET status = ? WHERE id = ?")
-        .bind(target.as_db())
-        .bind(id)
-        .execute(db)
-        .await?;
+    let changed = sqlx::query(
+        "UPDATE quote SET status = ? WHERE id = ? AND deleted_at IS NULL AND status = ?",
+    )
+    .bind(target.as_db())
+    .bind(id)
+    .bind(&current)
+    .execute(db)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        return Err(DataError::Other(
+            "quote changed while its status was being updated; try again".into(),
+        ));
+    }
     Ok(())
 }
 
 pub async fn delete(db: &Db, id: i64) -> Result<(), DataError> {
-    sqlx::query("UPDATE quote SET deleted_at = datetime('now') WHERE id = ?")
-        .bind(id)
-        .execute(db)
-        .await?;
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM quote WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    let status = status.ok_or_else(|| DataError::Other("quote not found".into()))?;
+    if !matches!(status.as_str(), "draft" | "declined" | "expired") {
+        return Err(DataError::Other(
+            "sent, accepted, or converted quotes cannot be deleted; decline an active quote first"
+                .into(),
+        ));
+    }
+    let changed = sqlx::query(
+        "UPDATE quote SET deleted_at = datetime('now') \
+         WHERE id = ? AND deleted_at IS NULL AND status = ?",
+    )
+    .bind(id)
+    .bind(status)
+    .execute(db)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        return Err(DataError::Other(
+            "quote changed while it was being deleted; try again".into(),
+        ));
+    }
     Ok(())
 }
 
 /// Convert an **accepted** quote into a draft invoice (copying its lines), link both, and mark it
 /// converted — all in one transaction so a crash can't orphan a draft or permit a second conversion.
 pub async fn convert_to_invoice(db: &Db, id: i64) -> Result<i64, DataError> {
-    let detail = get_detail(db, id)
-        .await?
-        .ok_or_else(|| DataError::Other("quote not found".into()))?;
-    let from = QuoteStatus::from_db(&detail.quote.status)
-        .ok_or_else(|| DataError::Other("invalid status".into()))?;
-    // Only an accepted quote may be converted (the status machine's one path to `converted`).
-    if from != QuoteStatus::Accepted {
-        return Err(DataError::Other(format!(
-            "only an accepted quote can be converted (this one is {})",
-            detail.quote.status
-        )));
-    }
-
-    let lines: Vec<LineInput> = detail
-        .lines
+    // Claim first. This is the transaction's first database operation, so competing invoice/job
+    // conversions cannot both read "accepted" and bill the same quote.
+    let mut tx = db.begin().await?;
+    let source: Option<(i64, String)> = sqlx::query_as(
+        "UPDATE quote SET status = 'converted' \
+         WHERE id = ? AND deleted_at IS NULL AND status = 'accepted' \
+         RETURNING customer_id, notes",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (customer_id, notes) = source
+        .ok_or_else(|| DataError::Other("quote not found or it is no longer accepted".into()))?;
+    let quote_lines = sqlx::query_as::<_, QuoteLineRow>(
+        "SELECT id, item_id, description, quantity, unit_price_minor, tax_rate_name, tax_rate_bp, \
+         tax_inclusive, net_minor, tax_minor, gross_minor FROM quote_line \
+         WHERE quote_id = ? ORDER BY line_order",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let lines: Vec<LineInput> = quote_lines
         .iter()
         .map(|l| LineInput {
             item_id: l.item_id,
@@ -294,16 +338,8 @@ pub async fn convert_to_invoice(db: &Db, id: i64) -> Result<i64, DataError> {
         })
         .collect();
 
-    let mut tx = db.begin().await?;
-    let invoice_id = invoices::create_draft_on(
-        &mut tx,
-        detail.quote.customer_id,
-        &lines,
-        None,
-        &detail.quote.notes,
-    )
-    .await?;
-    sqlx::query("UPDATE quote SET status = 'converted', converted_invoice_id = ? WHERE id = ?")
+    let invoice_id = invoices::create_draft_on(&mut tx, customer_id, &lines, None, &notes).await?;
+    sqlx::query("UPDATE quote SET converted_invoice_id = ? WHERE id = ?")
         .bind(invoice_id)
         .bind(id)
         .execute(&mut *tx)

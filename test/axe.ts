@@ -4,8 +4,8 @@ import { expect } from "vitest";
 /**
  * Assert an element has no axe accessibility violations.
  *
- * `color-contrast` is disabled because jsdom has no layout engine to compute it — contrast is
- * verified separately by the Playwright pass against a real browser, in light and dark.
+ * `color-contrast` is disabled because jsdom has no layout engine to compute it. The design-token
+ * contrast test covers the application's supported text/background pairings in both themes.
  */
 export async function expectNoA11yViolations(container: HTMLElement): Promise<void> {
   const results = await run(container, {

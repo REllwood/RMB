@@ -16,9 +16,11 @@ import {
 import {
   emptyLine,
   NO_TAX,
+  normaliseQuantity,
   taxKey,
   toChoice,
   type EditLine,
+  type LineIssue,
   type TaxChoice,
 } from "@/features/shared/lines";
 
@@ -33,12 +35,14 @@ export function LineEditor({
   taxes,
   items,
   idPrefix,
+  issues = [],
 }: {
   lines: EditLine[];
   onChange: (lines: EditLine[]) => void;
   taxes: TaxRate[];
   items: Item[];
   idPrefix: string;
+  issues?: LineIssue[];
 }) {
   const money = useMoneyFormat();
   const products = items.filter((i) => i.kind === "product");
@@ -73,7 +77,7 @@ export function LineEditor({
   }
 
   function lineTotal(l: EditLine): number {
-    return Math.round((parseMoney(l.price) ?? 0) * (Number(l.quantity) || 0));
+    return Math.round((parseMoney(l.price) ?? 0) * Number(normaliseQuantity(l.quantity) ?? 0));
   }
 
   return (
@@ -97,6 +101,8 @@ export function LineEditor({
             // Offer No Tax + active rates; keep the line's stored rate visible even if archived.
             const options: TaxChoice[] = [NO_TAX, ...taxes.map(toChoice)];
             if (!options.some((o) => taxKey(o) === taxKey(l.tax))) options.unshift(l.tax);
+            const issue = issues[i] ?? {};
+            const errorSummaryId = `${idPrefix}-line-errors`;
             return (
               <TableRow key={i}>
                 <TableCell>
@@ -109,8 +115,12 @@ export function LineEditor({
                     onChange={(e) => pickItem(i, e.target.value)}
                   >
                     <option value="">Custom</option>
-                    {products.length > 0 && <optgroup label="Products">{products.map(itemOption)}</optgroup>}
-                    {services.length > 0 && <optgroup label="Services">{services.map(itemOption)}</optgroup>}
+                    {products.length > 0 && (
+                      <optgroup label="Products">{products.map(itemOption)}</optgroup>
+                    )}
+                    {services.length > 0 && (
+                      <optgroup label="Services">{services.map(itemOption)}</optgroup>
+                    )}
                   </Select>
                 </TableCell>
                 <TableCell>
@@ -119,6 +129,9 @@ export function LineEditor({
                   </label>
                   <Input
                     id={`${idPrefix}-desc-${i}`}
+                    maxLength={2000}
+                    aria-invalid={Boolean(issue.description)}
+                    aria-describedby={issue.description ? errorSummaryId : undefined}
                     value={l.description}
                     onChange={(e) => patch(i, { description: e.target.value })}
                   />
@@ -129,6 +142,8 @@ export function LineEditor({
                   </label>
                   <Input
                     id={`${idPrefix}-qty-${i}`}
+                    aria-invalid={Boolean(issue.quantity)}
+                    aria-describedby={issue.quantity ? errorSummaryId : undefined}
                     inputMode="decimal"
                     value={l.quantity}
                     onChange={(e) => patch(i, { quantity: e.target.value })}
@@ -140,6 +155,8 @@ export function LineEditor({
                   </label>
                   <Input
                     id={`${idPrefix}-price-${i}`}
+                    aria-invalid={Boolean(issue.price)}
+                    aria-describedby={issue.price ? errorSummaryId : undefined}
                     inputMode="decimal"
                     value={l.price}
                     onChange={(e) => patch(i, { price: e.target.value })}
@@ -182,6 +199,21 @@ export function LineEditor({
           })}
         </TableBody>
       </Table>
+      {issues.some((issue) => issue.description || issue.quantity || issue.price) && (
+        <div
+          id={`${idPrefix}-line-errors`}
+          role="alert"
+          className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          {issues
+            .flatMap((issue, index) =>
+              [issue.description, issue.quantity, issue.price]
+                .filter((message): message is string => Boolean(message))
+                .map((message) => `Line ${index + 1}: ${message}`),
+            )
+            .join(" · ")}
+        </div>
+      )}
       <Button variant="outline" size="sm" onClick={() => onChange([...lines, emptyLine(taxes)])}>
         <Plus className="size-4" /> Add line
       </Button>

@@ -5,22 +5,24 @@
 //! tracked-product stock exactly once, and flips status to `issued`. Issued invoices are immutable —
 //! correct via **void** (reverses stock; allowed only while the invoice is unpaid).
 
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use rmb_domain::document::{total_lines, DocumentLine};
 use rmb_domain::inventory::MovementReason;
 use rmb_domain::numbering::format_number;
 use rmb_domain::status::{payment_status, InvoiceStatus};
-use rmb_domain::tax::{line_tax, TaxRate};
+use rmb_domain::tax::{line_tax, DocumentTotals, TaxRate};
 use rmb_domain::Money;
 use rust_decimal::prelude::ToPrimitive;
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 use crate::db::Db;
 use crate::error::DataError;
 use crate::repos::items;
+use crate::validation::valid_business_date;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LineInput {
@@ -68,31 +70,177 @@ pub struct InvoiceDetail {
     pub invoice: InvoiceRow,
     pub lines: Vec<InvoiceLineRow>,
     pub amount_paid_minor: i64,
+    /// Frozen JSON captured when the invoice was issued. Drafts have no snapshot.
+    pub business_snapshot: Option<String>,
+    /// Frozen JSON captured when the invoice was issued. Drafts have no snapshot.
+    pub customer_snapshot: Option<String>,
+    /// Frozen per-rate tax breakdown computed with the invoice lines.
+    pub tax_summary: String,
+    /// Frozen logo bytes captured at issue. Not sent across IPC; only native PDF export consumes it.
+    #[serde(skip_serializing)]
+    pub business_logo_data: Option<Vec<u8>>,
+    /// `png` or `jpg`, paired with `business_logo_data`.
+    #[serde(skip_serializing)]
+    pub business_logo_format: Option<String>,
 }
 
 pub(crate) fn to_doc_line(l: &LineInput) -> Result<DocumentLine, DataError> {
-    let qty = Decimal::from_str(l.quantity.trim())
+    let description = l.description.trim();
+    if description.is_empty() {
+        return Err(DataError::Other("every line needs a description".into()));
+    }
+    if description.chars().count() > 2_000 {
+        return Err(DataError::Other(
+            "line descriptions cannot exceed 2,000 characters".into(),
+        ));
+    }
+    let quantity = l.quantity.trim();
+    if quantity.chars().count() > 100 {
+        return Err(DataError::Other("line quantity is too long".into()));
+    }
+    let qty = Decimal::from_str(quantity)
         .map_err(|e| DataError::Other(format!("invalid quantity '{}': {e}", l.quantity)))?;
+    if qty <= Decimal::ZERO || qty > Decimal::from(1_000_000_000_i64) {
+        return Err(DataError::Other(
+            "line quantity must be greater than zero and no more than 1,000,000,000".into(),
+        ));
+    }
+    if l.unit_price_minor < 0 {
+        return Err(DataError::Other("unit price cannot be negative".into()));
+    }
+    let tax_rate_name = l.tax_rate_name.trim();
+    if tax_rate_name.is_empty() {
+        return Err(DataError::Other("every line needs a tax-rate name".into()));
+    }
+    if tax_rate_name.chars().count() > 100 {
+        return Err(DataError::Other(
+            "tax-rate names cannot exceed 100 characters".into(),
+        ));
+    }
+    // This broad upper bound still permits unusual excise rates while ruling out invalid values
+    // that could overflow document arithmetic (100_000 bp = 1,000%).
+    if !(0..=100_000).contains(&l.tax_rate_bp) {
+        return Err(DataError::Other(
+            "tax rate must be between 0% and 1,000%".into(),
+        ));
+    }
+    let rounded_amount = Decimal::from(l.unit_price_minor)
+        .checked_mul(qty)
+        .and_then(|amount| {
+            amount
+                .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+                .to_i64()
+        })
+        .ok_or_else(|| DataError::Other("line amount is too large".into()))?;
+    // Exclusive tax can expand the amount by at most 11× under the rate bound above.
+    if rounded_amount > i64::MAX / 11 {
+        return Err(DataError::Other("line amount is too large".into()));
+    }
     Ok(DocumentLine::new(
-        l.description.clone(),
+        description.to_owned(),
         qty,
         Money::from_minor(l.unit_price_minor),
-        TaxRate::new(l.tax_rate_name.clone(), l.tax_rate_bp, l.tax_inclusive),
+        TaxRate::new(tax_rate_name.to_owned(), l.tax_rate_bp, l.tax_inclusive),
     ))
+}
+
+/// Validate every line and the aggregate arithmetic before the infallible domain calculator runs.
+/// This turns malformed/hostile IPC input into an ordinary error rather than a process panic.
+pub(crate) fn validated_totals(lines: &[LineInput]) -> Result<DocumentTotals, DataError> {
+    if lines.len() > 1_000 {
+        return Err(DataError::Other(
+            "a document cannot contain more than 1,000 lines".into(),
+        ));
+    }
+    let doc_lines = lines
+        .iter()
+        .map(to_doc_line)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut net = 0_i64;
+    let mut tax = 0_i64;
+    let mut gross = 0_i64;
+    for line in &doc_lines {
+        let line_total = line_tax(line.line_amount(), &line.tax_rate);
+        net = net
+            .checked_add(line_total.net.minor())
+            .ok_or_else(|| DataError::Other("document subtotal is too large".into()))?;
+        tax = tax
+            .checked_add(line_total.tax.minor())
+            .ok_or_else(|| DataError::Other("document tax total is too large".into()))?;
+        gross = gross
+            .checked_add(line_total.gross.minor())
+            .ok_or_else(|| DataError::Other("document total is too large".into()))?;
+    }
+    debug_assert_eq!(net.checked_add(tax), Some(gross));
+    Ok(total_lines(&doc_lines))
+}
+
+/// Any non-null catalogue link must point at an active item. Custom lines use `None`. Repeating
+/// IDs are checked once so a large document does not issue redundant queries.
+pub(crate) async fn validate_line_items(
+    conn: &mut sqlx::SqliteConnection,
+    lines: &[LineInput],
+) -> Result<(), DataError> {
+    let item_ids: HashSet<i64> = lines.iter().filter_map(|line| line.item_id).collect();
+    for item_id in item_ids {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM item WHERE id = ? AND deleted_at IS NULL)",
+        )
+        .bind(item_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if !active {
+            return Err(DataError::Other(format!(
+                "catalogue item {item_id} was not found or is inactive"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Quantity for a tracked-product stock movement: must be a **whole, non-negative** number.
 /// Tracked stock is counted in whole units, so fractional/negative quantities are rejected
 /// rather than silently rounded (which would desync stock from what was billed).
-fn tracked_qty(qty_str: &str) -> Result<i64, DataError> {
+pub(crate) fn tracked_qty(qty_str: &str) -> Result<i64, DataError> {
     let qty = Decimal::from_str(qty_str.trim())
         .map_err(|e| DataError::Other(format!("invalid quantity '{qty_str}': {e}")))?;
-    if qty < Decimal::ZERO || qty.fract() != Decimal::ZERO {
+    if qty <= Decimal::ZERO || qty.fract() != Decimal::ZERO {
         return Err(DataError::Other(format!(
-            "a tracked product line needs a whole, non-negative quantity (got {qty})"
+            "a tracked product line needs a whole, positive quantity (got {qty})"
         )));
     }
-    Ok(qty.to_i64().unwrap_or(0))
+    qty.to_i64()
+        .ok_or_else(|| DataError::Other("tracked quantity is too large".into()))
+}
+
+pub(crate) async fn validate_draft_metadata(
+    conn: &mut sqlx::SqliteConnection,
+    customer_id: i64,
+    date: Option<&str>,
+    date_label: &str,
+    notes: &str,
+) -> Result<(), DataError> {
+    let customer_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM customer WHERE id = ? AND deleted_at IS NULL)",
+    )
+    .bind(customer_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !customer_exists {
+        return Err(DataError::Other("active customer not found".into()));
+    }
+    if date.is_some_and(|value| !valid_business_date(value.trim())) {
+        return Err(DataError::Other(format!(
+            "{date_label} must be a valid YYYY-MM-DD date"
+        )));
+    }
+    if notes.chars().count() > 20_000 {
+        return Err(DataError::Other(
+            "document notes cannot exceed 20,000 characters".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Create a draft invoice on a **caller-supplied** connection/transaction (does not commit), so a
@@ -111,12 +259,11 @@ pub(crate) async fn create_draft_on(
             "an invoice needs at least one line".into(),
         ));
     }
-    let doc_lines = lines
-        .iter()
-        .map(to_doc_line)
-        .collect::<Result<Vec<_>, _>>()?;
-    let totals = total_lines(&doc_lines);
+    let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
+    validate_draft_metadata(conn, customer_id, due_date, "due date", notes).await?;
+    validate_line_items(conn, lines).await?;
+    let due_date = due_date.map(str::trim);
 
     let invoice_id = sqlx::query(
         "INSERT INTO invoice (customer_id, status, due_date, subtotal_minor, tax_minor, total_minor, tax_summary, notes) \
@@ -153,10 +300,10 @@ async fn insert_lines(
         )
         .bind(invoice_id)
         .bind(l.item_id)
-        .bind(&l.description)
-        .bind(&l.quantity)
+        .bind(&dl.description)
+        .bind(dl.quantity.normalize().to_string())
         .bind(l.unit_price_minor)
-        .bind(&l.tax_rate_name)
+        .bind(&dl.tax_rate.name)
         .bind(l.tax_rate_bp)
         .bind(l.tax_inclusive)
         .bind(lt.net.minor())
@@ -198,28 +345,24 @@ pub async fn update_draft(
             "an invoice needs at least one line".into(),
         ));
     }
-    let doc_lines = lines
-        .iter()
-        .map(to_doc_line)
-        .collect::<Result<Vec<_>, _>>()?;
-    let totals = total_lines(&doc_lines);
+    let totals = validated_totals(lines)?;
     let tax_summary = serde_json::to_string(&totals.tax_summary).unwrap_or_else(|_| "[]".into());
 
     let mut tx = db.begin().await?;
-    let status: Option<String> = sqlx::query_scalar("SELECT status FROM invoice WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    match status.as_deref() {
-        None => return Err(DataError::Other("invoice not found".into())),
-        Some("draft") => {}
-        Some(_) => {
-            return Err(DataError::Other(
-                "only draft invoices can be edited (void + reissue to correct an issued one)"
-                    .into(),
-            ))
-        }
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' RETURNING id",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if claimed.is_none() {
+        return Err(DataError::Other(
+            "only draft invoices can be edited (void + reissue to correct an issued one)".into(),
+        ));
     }
+    validate_draft_metadata(&mut tx, customer_id, due_date, "due date", notes).await?;
+    validate_line_items(&mut tx, lines).await?;
+    let due_date = due_date.map(str::trim);
 
     sqlx::query(
         "UPDATE invoice SET customer_id = ?, due_date = ?, notes = ?, subtotal_minor = ?, \
@@ -248,18 +391,16 @@ pub async fn update_draft(
 /// no payments, so deletion is safe; issued invoices are voided, never deleted.
 pub async fn delete_draft(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = db.begin().await?;
-    let status: Option<String> = sqlx::query_scalar("SELECT status FROM invoice WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    match status.as_deref() {
-        None => return Err(DataError::Other("invoice not found".into())),
-        Some("draft") => {}
-        Some(_) => {
-            return Err(DataError::Other(
-                "only draft invoices can be deleted (issued invoices are voided instead)".into(),
-            ))
-        }
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' RETURNING id",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if claimed.is_none() {
+        return Err(DataError::Other(
+            "only draft invoices can be deleted (issued invoices are voided instead)".into(),
+        ));
     }
     sqlx::query("DELETE FROM invoice_line WHERE invoice_id = ?")
         .bind(id)
@@ -277,17 +418,17 @@ pub async fn delete_draft(db: &Db, id: i64) -> Result<(), DataError> {
 pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = db.begin().await?;
 
-    let row = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT status, customer_id, total_minor FROM invoice WHERE id = ?",
+    // Claim the draft as the transaction's first operation. Duplicate issue/edit/delete actions
+    // therefore serialize before numbering, snapshots, or stock movements are touched.
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        "UPDATE invoice SET status = status WHERE id = ? AND status = 'draft' \
+         RETURNING customer_id, total_minor",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (status, customer_id, total_minor) =
-        row.ok_or_else(|| DataError::Other("invoice not found".into()))?;
-    if status != "draft" {
-        return Err(DataError::Other("only draft invoices can be issued".into()));
-    }
+    let (customer_id, total_minor) =
+        row.ok_or_else(|| DataError::Other("invoice not found or it is no longer a draft".into()))?;
     let line_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM invoice_line WHERE invoice_id = ?")
             .bind(id)
@@ -311,22 +452,44 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
         .await?;
 
     // Freeze business + customer snapshots.
-    let biz = sqlx::query_as::<_, (String, String, String, String, Option<String>, String, String)>(
-        "SELECT business_name, address, email, phone, logo_path, tax_label, tax_number FROM settings WHERE id = 1",
+    let biz = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            Option<i64>,
+        ),
+    >(
+        "SELECT business_name, address, email, phone, logo_path, tax_label, tax_number, currency, \
+         logo_asset_id \
+         FROM settings WHERE id = 1",
     )
     .fetch_one(&mut *tx)
     .await?;
+    if biz.0.trim().is_empty() {
+        return Err(DataError::Other(
+            "add your business name in Settings before issuing an invoice".into(),
+        ));
+    }
     let business_snapshot = serde_json::json!({
         "name": biz.0, "address": biz.1, "email": biz.2, "phone": biz.3,
-        "logo_path": biz.4, "tax_label": biz.5, "tax_number": biz.6,
+        "logo_path": biz.4, "tax_label": biz.5, "tax_number": biz.6, "currency": biz.7,
     })
     .to_string();
     let cust = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT name, email, phone, billing_address FROM customer WHERE id = ?",
+        "SELECT name, email, phone, billing_address FROM customer \
+         WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(customer_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| DataError::Other("active customer not found".into()))?;
     let customer_snapshot = serde_json::json!({
         "name": cust.0, "email": cust.1, "phone": cust.2, "address": cust.3,
     })
@@ -366,12 +529,14 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
     let new_status = payment_status(Money::from_minor(total_minor), Money::ZERO).as_db();
     sqlx::query(
         "UPDATE invoice SET status = ?, number = ?, issue_date = date('now','localtime'), \
-         issued_at = datetime('now'), business_snapshot = ?, customer_snapshot = ? WHERE id = ?",
+         issued_at = datetime('now'), business_snapshot = ?, customer_snapshot = ?, \
+         business_logo_asset_id = ? WHERE id = ?",
     )
     .bind(new_status)
     .bind(&number)
     .bind(&business_snapshot)
     .bind(&customer_snapshot)
+    .bind(biz.8)
     .bind(id)
     .execute(&mut *tx)
     .await?;
@@ -385,25 +550,22 @@ pub async fn issue(db: &Db, id: i64) -> Result<(), DataError> {
 /// the cash trail intact.
 pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
     let mut tx = db.begin().await?;
-    let status: Option<String> = sqlx::query_scalar("SELECT status FROM invoice WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let status = status.ok_or_else(|| DataError::Other("invoice not found".into()))?;
-    if status == "draft" || status == "void" {
-        return Err(DataError::Other(
-            "only issued invoices can be voided".into(),
-        ));
-    }
-    let allocated: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount_minor), 0) FROM payment_allocation WHERE invoice_id = ?",
+    // Claim before reading lines. This competes atomically with payment recording, whose first
+    // operation also takes the invoice write lock, so cash and a void can never cross in flight.
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "UPDATE invoice SET status = 'void', voided_at = datetime('now') \
+         WHERE id = ? AND status IN ('issued', 'part_paid', 'paid') \
+           AND NOT EXISTS (SELECT 1 FROM payment_allocation \
+                           WHERE invoice_id = ? AND amount_minor > 0) \
+         RETURNING id",
     )
     .bind(id)
-    .fetch_one(&mut *tx)
+    .bind(id)
+    .fetch_optional(&mut *tx)
     .await?;
-    if allocated > 0 {
+    if claimed.is_none() {
         return Err(DataError::Other(
-            "cannot void an invoice with recorded payments (refunds/credit notes are a later feature)".into(),
+            "invoice not found, already void, still a draft, or has recorded payments".into(),
         ));
     }
 
@@ -436,10 +598,6 @@ pub async fn void(db: &Db, id: i64) -> Result<(), DataError> {
             }
         }
     }
-    sqlx::query("UPDATE invoice SET status = 'void', voided_at = datetime('now') WHERE id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -490,10 +648,39 @@ pub async fn get_detail(db: &Db, id: i64) -> Result<Option<InvoiceDetail>, DataE
     .fetch_one(db)
     .await?;
 
+    let (
+        business_snapshot,
+        customer_snapshot,
+        tax_summary,
+        business_logo_data,
+        business_logo_format,
+    ) = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            String,
+            Option<Vec<u8>>,
+            Option<String>,
+        ),
+    >(
+        "SELECT i.business_snapshot, i.customer_snapshot, i.tax_summary, a.data, a.format \
+             FROM invoice i LEFT JOIN business_logo_asset a \
+             ON a.id = i.business_logo_asset_id WHERE i.id = ?",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?;
+
     Ok(Some(InvoiceDetail {
         invoice,
         lines,
         amount_paid_minor,
+        business_snapshot,
+        customer_snapshot,
+        tax_summary,
+        business_logo_data,
+        business_logo_format,
     }))
 }
 
@@ -511,6 +698,9 @@ mod tests {
     use crate::repos::{customers, items, settings};
 
     async fn seed_customer(db: &Db) -> i64 {
+        let mut business = settings::get(db).await.unwrap();
+        business.business_name = "Test business".into();
+        settings::update(db, &business).await.unwrap();
         customers::create(
             db,
             &customers::CustomerInput {
@@ -542,6 +732,18 @@ mod tests {
         pool: Db,
     ) -> Result<(), DataError> {
         let customer = seed_customer(&pool).await;
+        let mut original_settings = settings::get(&pool).await?;
+        original_settings.business_name = "Original business".into();
+        original_settings.currency = "AUD".into();
+        original_settings.tax_label = "GST".into();
+        original_settings.tax_number = "ABN-ORIGINAL".into();
+        settings::update(&pool, &original_settings).await?;
+        settings::set_logo_asset(
+            &pool,
+            Some("/test/original-logo.png"),
+            Some((b"original-logo", "png")),
+        )
+        .await?;
         let item = items::create(
             &pool,
             &items::ItemInput {
@@ -568,6 +770,31 @@ mod tests {
         .await?;
         issue(&pool, inv).await?;
 
+        // Later edits must not rewrite the identity or currency of the issued invoice.
+        let mut changed_settings = settings::get(&pool).await?;
+        changed_settings.business_name = "Renamed business".into();
+        changed_settings.currency = "USD".into();
+        changed_settings.tax_number = "NEW-NUMBER".into();
+        settings::update(&pool, &changed_settings).await?;
+        settings::set_logo_asset(
+            &pool,
+            Some("/test/new-logo.jpg"),
+            Some((b"new-logo", "jpg")),
+        )
+        .await?;
+        customers::update(
+            &pool,
+            customer,
+            &customers::CustomerInput {
+                name: "Renamed customer".into(),
+                email: "new@example.com".into(),
+                phone: String::new(),
+                billing_address: String::new(),
+                notes: String::new(),
+            },
+        )
+        .await?;
+
         let detail = get_detail(&pool, inv).await?.unwrap();
         assert_eq!(detail.invoice.status, "issued");
         assert_eq!(detail.invoice.number.as_deref(), Some("INV-0001"));
@@ -577,7 +804,20 @@ mod tests {
         assert_eq!(detail.invoice.total_minor, 3600);
         // stock decremented exactly once: 10 - 3 = 7
         assert_eq!(items::get(&pool, item).await?.unwrap().qty_on_hand, 7);
-        // business/customer snapshots frozen
+        let business: serde_json::Value =
+            serde_json::from_str(detail.business_snapshot.as_deref().unwrap()).unwrap();
+        let customer_snapshot: serde_json::Value =
+            serde_json::from_str(detail.customer_snapshot.as_deref().unwrap()).unwrap();
+        assert_eq!(business["name"], "Original business");
+        assert_eq!(business["currency"], "AUD");
+        assert_eq!(business["tax_number"], "ABN-ORIGINAL");
+        assert_eq!(customer_snapshot["name"], "Acme");
+        assert_eq!(
+            detail.business_logo_data.as_deref(),
+            Some(b"original-logo".as_slice())
+        );
+        assert_eq!(detail.business_logo_format.as_deref(), Some("png"));
+        assert!(detail.tax_summary.contains("VAT 20%"));
         assert!(settings::get(&pool).await?.invoice_next_seq == 2);
 
         // re-issuing fails (immutable)
@@ -631,6 +871,46 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(orphan_lines, 0);
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn invalid_document_lines_return_errors_without_partial_rows(
+        pool: Db,
+    ) -> Result<(), DataError> {
+        let customer = seed_customer(&pool).await;
+        let mut cases = vec![
+            line(None, "0", 100, 0),
+            line(None, "-1", 100, 0),
+            line(None, "1", -1, 0),
+            line(None, "1", 100, -1),
+            line(None, "2", i64::MAX, 0),
+            line(Some(99_999), "1", 100, 0),
+        ];
+        let mut blank = line(None, "1", 100, 0);
+        blank.description = "   ".into();
+        cases.push(blank);
+        let mut oversized_description = line(None, "1", 100, 0);
+        oversized_description.description = "x".repeat(2_001);
+        cases.push(oversized_description);
+        let mut oversized_tax_name = line(None, "1", 100, 0);
+        oversized_tax_name.tax_rate_name = "x".repeat(101);
+        cases.push(oversized_tax_name);
+        cases.push(line(None, "1000000001", 100, 0));
+        cases.push(line(None, &"1".repeat(101), 100, 0));
+
+        for invalid in cases {
+            assert!(
+                create_draft(&pool, customer, &[invalid], None, "")
+                    .await
+                    .is_err(),
+                "invalid document input must be rejected"
+            );
+        }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invoice")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 0, "failed validation must not leave draft rows");
         Ok(())
     }
 

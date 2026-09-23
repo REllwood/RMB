@@ -8,6 +8,7 @@ pub mod backup;
 pub mod db;
 pub mod error;
 pub mod repos;
+mod validation;
 
 pub use error::DataError;
 

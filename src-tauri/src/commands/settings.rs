@@ -6,8 +6,10 @@ use tauri::{Manager, State};
 
 use crate::error::AppError;
 
-const LOGO_NAMES: [&str; 3] = ["logo.png", "logo.jpg", "logo.jpeg"];
 const MAX_LOGO_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_LOGO_DIMENSION: u32 = 8_000;
+const MAX_LOGO_PIXELS: u64 = 16_000_000;
+static LOGO_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[tauri::command]
 pub async fn get_settings(db: State<'_, Db>) -> Result<Settings, AppError> {
@@ -59,8 +61,9 @@ pub async fn apply_tax_preset(db: State<'_, Db>, country: String) -> Result<(), 
     Ok(())
 }
 
-/// Import a business logo: validate it's a small PNG/JPEG, copy it into the app data dir
-/// (so the original can move/disappear), and store the path in settings for PDF branding.
+/// Import a business logo: validate it's a small PNG/JPEG, copy it to an immutable versioned path
+/// in the app data directory, and store that path for future PDFs. Issued invoice snapshots retain
+/// the path they were issued with, so later logo changes cannot alter historical documents.
 #[tauri::command]
 pub async fn set_logo(
     app: tauri::AppHandle,
@@ -86,35 +89,69 @@ pub async fn set_logo(
     if size > MAX_LOGO_BYTES {
         return Err(AppError::Message("the logo must be under 5 MB".into()));
     }
+    if size == 0 {
+        return Err(AppError::Message("the chosen logo is empty".into()));
+    }
+
+    let reader = image::ImageReader::open(&src_path)
+        .map_err(|_| AppError::Message("the chosen file is not a readable image".into()))?
+        .with_guessed_format()
+        .map_err(|_| AppError::Message("the chosen file is not a readable image".into()))?;
+    let expected_format = if ext == "png" {
+        image::ImageFormat::Png
+    } else {
+        image::ImageFormat::Jpeg
+    };
+    if reader.format() != Some(expected_format) {
+        return Err(AppError::Message(
+            "the file contents do not match its PNG or JPEG extension".into(),
+        ));
+    }
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| AppError::Message("the chosen file is not a valid PNG or JPEG".into()))?;
+    let pixels = u64::from(width) * u64::from(height);
+    if width == 0
+        || height == 0
+        || width > MAX_LOGO_DIMENSION
+        || height > MAX_LOGO_DIMENSION
+        || pixels > MAX_LOGO_PIXELS
+    {
+        return Err(AppError::Message(format!(
+            "logo dimensions must be no more than {MAX_LOGO_DIMENSION} pixels per side and {MAX_LOGO_PIXELS} pixels in total"
+        )));
+    }
+    let logo_data = std::fs::read(&src_path)
+        .map_err(|e| AppError::Message(format!("could not read the validated logo: {e}")))?;
+    image::load_from_memory_with_format(&logo_data, expected_format)
+        .map_err(|_| AppError::Message("the chosen PNG or JPEG is incomplete or corrupt".into()))?;
+    let stored_format = if ext == "png" { "png" } else { "jpg" };
 
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| AppError::Message(e.to_string()))?;
     std::fs::create_dir_all(&dir).map_err(|e| AppError::Message(e.to_string()))?;
-    for name in LOGO_NAMES {
-        let _ = std::fs::remove_file(dir.join(name));
-    }
-    let dest = dir.join(format!("logo.{ext}"));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let sequence = LOGO_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dest = dir.join(format!(
+        "logo-{stamp}-{}-{sequence}.{ext}",
+        std::process::id()
+    ));
     std::fs::copy(&src_path, &dest).map_err(|e| AppError::Message(format!("copy failed: {e}")))?;
 
     let dest_str = dest.to_string_lossy().into_owned();
-    let mut s = settings::get(&db).await?;
-    s.logo_path = Some(dest_str.clone());
-    settings::update(&db, &s).await?;
+    settings::set_logo_asset(&db, Some(&dest_str), Some((&logo_data, stored_format))).await?;
     Ok(dest_str)
 }
 
-/// Remove the stored logo (file + setting).
+/// Stop using a logo for future documents. Versioned assets remain because issued invoice and
+/// receipt snapshots may still reference them.
 #[tauri::command]
-pub async fn clear_logo(app: tauri::AppHandle, db: State<'_, Db>) -> Result<(), AppError> {
-    if let Ok(dir) = app.path().app_data_dir() {
-        for name in LOGO_NAMES {
-            let _ = std::fs::remove_file(dir.join(name));
-        }
-    }
-    let mut s = settings::get(&db).await?;
-    s.logo_path = None;
-    settings::update(&db, &s).await?;
+pub async fn clear_logo(db: State<'_, Db>) -> Result<(), AppError> {
+    settings::set_logo_asset(&db, None, None).await?;
     Ok(())
 }
