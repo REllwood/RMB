@@ -261,7 +261,29 @@ export interface RecurringInvoice {
 }
 
 /** List row: schedule fields flattened + computed template total. */
-export type RecurringListRow = RecurringInvoice & { total_minor: number; problem: string | null };
+export type RecurringListRow = RecurringInvoice & {
+  total_minor: number;
+  /** Why the schedule can't generate as stored; editing it fixes this. */
+  problem: string | null;
+  /** Past its end date — it won't generate again unless the end date moves. */
+  ended: boolean;
+  customer_name: string;
+};
+
+/** Result of generating due recurring invoices. */
+export interface RunReport {
+  created: number[];
+  /** One message per schedule that couldn't generate. */
+  problems: string[];
+}
+
+/** What resuming a paused schedule would do. */
+export interface ResumePreview {
+  /** Invoices missed while paused. */
+  missed: number;
+  /** Where the schedule continues if the missed invoices are skipped. */
+  skip_to: string;
+}
 
 export interface RecurringLineRow {
   id: number;

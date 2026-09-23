@@ -21,6 +21,8 @@ import type {
   RecurringDetail,
   RecurringInput,
   RecurringListRow,
+  ResumePreview,
+  RunReport,
   Settings,
   StockMovement,
   TaxRate,
@@ -135,10 +137,11 @@ export const ipc = {
     invoke<number>("create_recurring", { input, lines }),
   updateRecurring: (id: number, input: RecurringInput, lines: LineInput[]) =>
     invoke<void>("update_recurring", { id, input, lines }),
-  setRecurringActive: (id: number, active: boolean) =>
-    invoke<void>("set_recurring_active", { id, active }),
+  setRecurringActive: (id: number, active: boolean, skipMissed = false) =>
+    invoke<void>("set_recurring_active", { id, active, skipMissed }),
+  recurringResumePreview: (id: number) => invoke<ResumePreview>("recurring_resume_preview", { id }),
   deleteRecurring: (id: number) => invoke<void>("delete_recurring", { id }),
-  runRecurringNow: () => invoke<number>("run_recurring_now"),
+  runRecurringNow: () => invoke<RunReport>("run_recurring_now"),
 
   // reports + csv exports
   reportTaxSummary: (from: string | null, to: string | null) =>

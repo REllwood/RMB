@@ -116,6 +116,7 @@ pub fn run() {
             commands::recurring::create_recurring,
             commands::recurring::update_recurring,
             commands::recurring::set_recurring_active,
+            commands::recurring::recurring_resume_preview,
             commands::recurring::delete_recurring,
             commands::recurring::run_recurring_now,
             // reports + exports

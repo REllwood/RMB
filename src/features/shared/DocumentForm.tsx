@@ -13,6 +13,7 @@ import { EmptyState, ErrorState, Loading } from "@/components/ui/states";
 import { LineEditor } from "@/features/shared/LineEditor";
 import {
   emptyLine,
+  hasLineIssues,
   normaliseQuantity,
   toLineInputs,
   validateEditLines,
@@ -102,9 +103,7 @@ export function DocumentForm({
   const items = itemsQ.data ?? [];
   const lines = edited ?? [emptyLine(taxes)];
   const lineIssues = validateEditLines(lines, items);
-  const hasLineIssues = lineIssues.some(
-    (issue) => issue.description || issue.quantity || issue.price,
-  );
+  const lineProblems = hasLineIssues(lineIssues);
   const payload = toLineInputs(lines);
   const netPreview = lines.reduce(
     (sum, l) =>
@@ -113,7 +112,7 @@ export function DocumentForm({
   );
 
   async function onSave() {
-    if (customerId === null || payload.length === 0 || hasLineIssues) return;
+    if (customerId === null || payload.length === 0 || lineProblems) return;
     try {
       const id = await save.mutateAsync({ customerId, lines: payload, date: date || null, notes });
       onSaved(id);
@@ -182,7 +181,7 @@ export function DocumentForm({
         <div className="flex gap-2">
           <Button
             onClick={onSave}
-            disabled={customerId === null || payload.length === 0 || hasLineIssues}
+            disabled={customerId === null || payload.length === 0 || lineProblems}
             loading={save.isPending}
             loadingLabel="Saving…"
           >

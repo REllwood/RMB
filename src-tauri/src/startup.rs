@@ -57,11 +57,14 @@ pub async fn initialise(data_dir: &Path) -> Result<Db, String> {
 
     // Generate any recurring invoices that came due while the app was closed. Drafts only —
     // nothing is issued without the user.
-    if let Err(error) = recurring::run_due_now(&pool).await {
-        eprintln!("recurring generation failed: {error}");
-        warnings.push(format!(
-            "Recurring invoices could not be generated. Review Recurring invoices and try Generate due now. ({error})"
-        ));
+    match recurring::run_due_now(&pool).await {
+        Ok(report) => warnings.extend(report.problems),
+        Err(error) => {
+            eprintln!("recurring generation failed: {error}");
+            warnings.push(format!(
+                "Recurring invoices could not be generated. Review Recurring invoices and try Generate due now. ({error})"
+            ));
+        }
     }
 
     if let Err(error) = meta::set(&pool, "startup.warning", &warnings.join("\n")).await {

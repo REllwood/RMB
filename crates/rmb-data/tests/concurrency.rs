@@ -179,7 +179,7 @@ async fn invoicing_a_job_cannot_leave_a_late_unbilled_entry(pool: Db) -> Result<
 #[sqlx::test]
 async fn recurring_period_is_claimed_only_once(pool: Db) -> Result<(), DataError> {
     let customer_id = customer(&pool, "Recurring customer").await?;
-    let schedule_id = recurring::create(
+    let schedule_id = recurring::create_as_of(
         &pool,
         &recurring::RecurringInput {
             customer_id,
@@ -190,6 +190,7 @@ async fn recurring_period_is_claimed_only_once(pool: Db) -> Result<(), DataError
             notes: String::new(),
         },
         &[line("Monthly service", 10_000)],
+        "2026-08-09",
     )
     .await?;
 
@@ -197,7 +198,7 @@ async fn recurring_period_is_claimed_only_once(pool: Db) -> Result<(), DataError
         recurring::run_due(&pool, "2026-08-09"),
         recurring::run_due(&pool, "2026-08-09"),
     );
-    let generated = first?.len() + second?.len();
+    let generated = first?.created.len() + second?.created.len();
     assert_eq!(generated, 1);
 
     let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invoice")
