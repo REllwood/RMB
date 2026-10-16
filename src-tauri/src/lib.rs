@@ -70,7 +70,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
             commands::get_meta,
             commands::set_meta,
             commands::backup::backup_database,

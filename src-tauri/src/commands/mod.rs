@@ -19,12 +19,6 @@ use tauri::State;
 
 use crate::error::AppError;
 
-/// Walking-skeleton command: greet via the pure domain function.
-#[tauri::command]
-pub fn greet(name: &str) -> Result<String, AppError> {
-    Ok(rmb_domain::greet(name))
-}
-
 /// App-meta keys the interface may read. Everything else in `app_meta` (the schema marker,
 /// upgrade notices) belongs to the backend.
 const READABLE_META: [&str; 2] = ["ui.theme", "startup.warning"];
