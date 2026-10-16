@@ -101,7 +101,7 @@ cargo test --workspace --all-targets
 npm run check          # versions, IPC surface, types, lint, formatting, tests, build
 ```
 
-There are 226 automated tests: 118 Rust tests and 108 front-end tests. Money, tax and inventory rules
+There are 227 automated tests: 119 Rust tests and 108 front-end tests. Money, tax and inventory rules
 are property-tested. Repositories run against real SQLite databases. Concurrency tests repeat races in
 payments, numbering, stock, quote conversion, job billing and recurring generation, on databases
 configured exactly as the app configures them. An invariants test drives hundreds of random actions and

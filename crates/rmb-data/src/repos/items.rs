@@ -198,13 +198,21 @@ pub async fn update(db: &Db, id: i64, input: &ItemInput) -> Result<(), DataError
     .bind(input.tracked)
     .execute(db)
     .await?;
-    if result.rows_affected() != 1 {
-        return Err(DataError::Other(
-            "this item has stock history, so it must stay a tracked product; create a new item for services"
-                .into(),
-        ));
+    if result.rows_affected() == 1 {
+        return Ok(());
     }
-    Ok(())
+    // Only an existing, active item can have been refused for its stock history.
+    let active: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item WHERE id = ? AND deleted_at IS NULL)")
+            .bind(id)
+            .fetch_one(db)
+            .await?;
+    Err(DataError::Other(if active {
+        "this item has stock history, so it must stay a tracked product; create a new item for services"
+            .into()
+    } else {
+        "item not found or it has been archived".into()
+    }))
 }
 
 /// Archived items, newest first — including any holding stock (a void can return stock to one).
@@ -433,8 +441,36 @@ mod tests {
         assert!(adjust_stock(&pool, product_id, 0, "no change")
             .await
             .is_err());
-        assert!(update(&pool, 99_999, &product("Missing")).await.is_err());
         assert!(soft_delete(&pool, 99_999).await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn updating_a_missing_or_archived_item_says_so(pool: Db) -> Result<(), DataError> {
+        let message = |result: Result<(), DataError>| result.unwrap_err().user_message();
+        assert_eq!(
+            message(update(&pool, 99_999, &product("Missing")).await),
+            "item not found or it has been archived"
+        );
+
+        let id = create(&pool, &product("Widget")).await?;
+        soft_delete(&pool, id).await?;
+        let mut untracked = product("Widget");
+        untracked.tracked = false;
+        untracked.reorder_point = None;
+        assert_eq!(
+            message(update(&pool, id, &untracked).await),
+            "item not found or it has been archived",
+            "an archived item is not refused for stock history it doesn't have"
+        );
+
+        // An active item with stock history is still refused for exactly that reason.
+        let stocked = create(&pool, &product("Gadget")).await?;
+        adjust_stock(&pool, stocked, 1, "opening stock").await?;
+        let mut untracked = product("Gadget");
+        untracked.tracked = false;
+        untracked.reorder_point = None;
+        assert!(message(update(&pool, stocked, &untracked).await).contains("stock history"));
         Ok(())
     }
 
