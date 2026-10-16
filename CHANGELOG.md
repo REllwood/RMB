@@ -48,7 +48,7 @@ First release candidate of the v1 core.
 - Voids are reported in their own period, drafts released by a void or delete can be billed again, and
   numbering skips numbers already used after a prefix change.
 - Forms ask before unsaved changes are discarded, and simple forms submit with Enter.
-- 223 automated tests (117 Rust, 106 front end), including repeated concurrency races on
+- 224 automated tests (117 Rust, 107 front end), including repeated concurrency races on
   production-configured databases, a randomised invariants run, and an end-to-end pass over the full
   business flow. CI builds and tests the desktop crate too. Reviewed Rust advisory exceptions are
   documented in `deny.toml`.
