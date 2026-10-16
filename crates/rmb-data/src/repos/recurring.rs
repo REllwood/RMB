@@ -725,12 +725,15 @@ async fn generate_due(
         )
         .await?;
         // Payment terms travel with the draft so issuing it late still gives the customer the
-        // full term from the issue date.
-        sqlx::query("UPDATE invoice SET due_days = ? WHERE id = ?")
-            .bind(s.due_days)
-            .bind(invoice_id)
-            .execute(&mut *tx)
-            .await?;
+        // full term from the issue date. A schedule without terms of its own leaves the draft on
+        // the business's default terms, which it took when it was created, like any other draft.
+        if s.due_days.is_some() {
+            sqlx::query("UPDATE invoice SET due_days = ? WHERE id = ?")
+                .bind(s.due_days)
+                .bind(invoice_id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
         created.push(invoice_id);
     }
@@ -1113,6 +1116,62 @@ mod tests {
         assert!(schedule.ended());
         assert!(list(&pool).await?[0].ended);
         assert!(set_active(&pool, id, true, false).await.is_err());
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn schedules_without_terms_use_the_default_payment_terms(
+        pool: Db,
+    ) -> Result<(), DataError> {
+        let customer = seed_customer(&pool).await;
+        let without_terms = create(&pool, &weekly(customer, "2026-01-05"), &[line(1000)]).await?;
+        create(
+            &pool,
+            &RecurringInput {
+                due_days: Some(7),
+                ..weekly(customer, "2026-01-05")
+            },
+            &[line(1000)],
+        )
+        .await?;
+
+        // No default terms yet: a schedule without its own terms makes drafts with no due date.
+        let first = run_due(&pool, "2026-01-05").await?.created;
+        assert_eq!(first.len(), 2);
+        let draft = invoices::get_detail(&pool, first[0])
+            .await?
+            .unwrap()
+            .invoice;
+        assert_eq!((draft.due_date, draft.due_days), (None, None));
+
+        // Once the business sets default terms, its next draft is due that long after issue.
+        let mut business = crate::repos::settings::get(&pool).await?;
+        business.default_due_days = Some(30);
+        crate::repos::settings::update(&pool, &business).await?;
+        let second = run_due(&pool, "2026-01-12").await?.created;
+        assert_eq!(second.len(), 2);
+        let draft = invoices::get_detail(&pool, second[0])
+            .await?
+            .unwrap()
+            .invoice;
+        assert_eq!((draft.due_date, draft.due_days), (None, Some(30)));
+        assert_eq!(
+            get_detail(&pool, without_terms)
+                .await?
+                .unwrap()
+                .schedule
+                .due_days,
+            None,
+            "the schedule itself still has no terms of its own"
+        );
+
+        // A schedule's own terms still win over the default.
+        let own = invoices::get_detail(&pool, second[1])
+            .await?
+            .unwrap()
+            .invoice;
+        assert_eq!(own.due_date.as_deref(), Some("2026-01-19"));
+        assert_eq!(own.due_days, Some(7));
         Ok(())
     }
 

@@ -338,7 +338,7 @@ function ScheduleForm({
   const [frequency, setFrequency] = useState(s?.frequency ?? "monthly");
   const [nextDate, setNextDate] = useState(s?.next_date ?? todayLocalISO());
   const [endDate, setEndDate] = useState(s?.end_date ?? "");
-  // New schedules default to 14-day terms; an existing schedule keeps "no due date" as blank.
+  // New schedules default to 14-day terms. Blank means the business's default terms, if any.
   const [dueDays, setDueDays] = useState(s ? (s.due_days == null ? "" : String(s.due_days)) : "14");
   const [notes, setNotes] = useState(s?.notes ?? "");
   const [edited, setEdited] = useState<EditLine[] | null>(initial ? fromRows(initial.lines) : null);
@@ -376,6 +376,7 @@ function ScheduleForm({
   const taxes = taxQ.data ?? [];
   const items = itemsQ.data ?? [];
   const defaultTaxRateId = settingsQ.data?.default_tax_rate_id ?? null;
+  const defaultDueDays = settingsQ.data?.default_due_days ?? null;
   const lines = edited ?? [emptyLine(taxes, defaultTaxRateId)];
   const lineIssues = validateEditLines(lines, items);
   const lineProblems = hasLineIssues(lineIssues);
@@ -499,7 +500,11 @@ function ScheduleForm({
           </Field>
           <Field
             label="Due in (days)"
-            hint="Blank for no due date"
+            hint={
+              defaultDueDays === null
+                ? "Blank for no due date"
+                : `Blank: your default terms, due ${defaultDueDays} day${defaultDueDays === 1 ? "" : "s"} after each invoice is issued`
+            }
             error={!dueDaysValid ? "Enter a whole number from 0 to 3,650" : undefined}
           >
             {(p) => (

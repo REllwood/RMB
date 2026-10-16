@@ -286,6 +286,18 @@ describe("detail views, forms and dialogs (WCAG-AA, jsdom)", () => {
     await expectNoA11yViolations(document.body);
   });
 
+  it("new recurring schedule says blank terms fall back to the default terms", async () => {
+    const user = userEvent.setup();
+    renderPage(<InvoicesPage />);
+    await user.click(await screen.findByRole("button", { name: /Recurring/ }));
+    await user.click((await screen.findAllByRole("button", { name: /New schedule/ }))[0]);
+    await screen.findByRole("heading", { name: "New recurring schedule" });
+    expect(
+      screen.getByText("Blank: your default terms, due 14 days after each invoice is issued"),
+    ).toBeInTheDocument();
+    await expectNoA11yViolations(document.body);
+  });
+
   it("quote detail", async () => {
     renderPage(<QuotesPage />, 1);
     await screen.findByText("Q-0001", { exact: false });
