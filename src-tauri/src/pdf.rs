@@ -1,6 +1,7 @@
 //! PDF generation via Typst — fully offline, using Typst's embedded default fonts so output is
 //! byte-identical across platforms. All money/dates are pre-formatted to strings in Rust.
 
+use rust_decimal::Decimal;
 use typst::foundations::{Bytes, Dict, IntoValue};
 use typst_as_lib::TypstEngine;
 
@@ -51,6 +52,12 @@ fn describe(error: &typst_as_lib::TypstAsLibError) -> String {
 
 /// Format integer minor units to a display string for the given currency.
 pub fn fmt_money(minor: i64, currency: &str) -> String {
+    fmt_money_exact(Decimal::from(minor), currency)
+}
+
+/// Format an amount in minor units that may carry extra decimal places, such as a unit price
+/// before tax (869.7 minor units → `$8.697`). Never fewer than the currency's two decimals.
+pub fn fmt_money_exact(minor: Decimal, currency: &str) -> String {
     let symbol = match currency {
         "USD" => "$",
         "GBP" => "£",
@@ -60,12 +67,18 @@ pub fn fmt_money(minor: i64, currency: &str) -> String {
         "CAD" => "C$",
         _ => "",
     };
-    let sign = if minor < 0 { "-" } else { "" };
-    let abs = minor.unsigned_abs();
-    let major = abs / 100;
-    let cents = abs % 100;
+    let sign = if minor.is_sign_negative() && !minor.is_zero() {
+        "-"
+    } else {
+        ""
+    };
+    let mut major = (minor.abs() / Decimal::ONE_HUNDRED).normalize();
+    if major.scale() < 2 {
+        major.rescale(2);
+    }
+    let text = major.to_string();
+    let (digits, fraction) = text.split_once('.').unwrap_or((text.as_str(), "00"));
 
-    let digits = major.to_string();
     let len = digits.len();
     let mut grouped = String::new();
     for (i, ch) in digits.chars().enumerate() {
@@ -76,9 +89,9 @@ pub fn fmt_money(minor: i64, currency: &str) -> String {
     }
 
     if symbol.is_empty() {
-        format!("{sign}{grouped}.{cents:02} {currency}")
+        format!("{sign}{grouped}.{fraction} {currency}")
     } else {
-        format!("{sign}{symbol}{grouped}.{cents:02}")
+        format!("{sign}{symbol}{grouped}.{fraction}")
     }
 }
 
@@ -120,5 +133,19 @@ mod tests {
         assert_eq!(fmt_money(99, "GBP"), "£0.99");
         assert_eq!(fmt_money(-5000, "EUR"), "-€50.00");
         assert_eq!(fmt_money(100000, "SEK"), "1,000.00 SEK");
+        assert_eq!(fmt_money(0, "USD"), "$0.00");
+        assert_eq!(fmt_money(i64::MIN, "USD"), "-$92,233,720,368,547,758.08");
+    }
+
+    #[test]
+    fn exact_money_keeps_extra_decimals_but_never_fewer_than_two() {
+        assert_eq!(fmt_money_exact(Decimal::new(8697, 1), "AUD"), "A$8.697");
+        assert_eq!(fmt_money_exact(Decimal::new(-86967, 2), "USD"), "-$8.6967");
+        assert_eq!(
+            fmt_money_exact(Decimal::new(12345678, 2), "USD"),
+            "$1,234.5678"
+        );
+        assert_eq!(fmt_money_exact(Decimal::new(100000, 2), "GBP"), "£10.00");
+        assert_eq!(fmt_money_exact(Decimal::new(5, 1), "SEK"), "0.005 SEK");
     }
 }

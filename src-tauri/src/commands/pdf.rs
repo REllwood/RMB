@@ -1,8 +1,11 @@
 //! PDF export commands for invoices, quotes, and payment receipts.
 
+use std::str::FromStr;
+
 use rmb_data::db::Db;
 use rmb_data::repos::settings::Settings;
 use rmb_data::repos::{customers, invoices, payments, quotes, settings};
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
 use serde_json::json;
 use tauri::State;
@@ -168,11 +171,16 @@ fn document_totals(
         rows.push(["Tax".into(), pdf::fmt_money(tax_minor, currency)]);
     } else {
         for summary in &summaries {
-            let percentage = format!("{:.2}%", summary.rate_bp as f64 / 100.0);
+            // The same percentage as the line table, added only when the name doesn't say it.
+            let percentage = percent_label(summary.rate_bp);
+            let rate = if names_rate(&summary.rate_name, &percentage) {
+                summary.rate_name.clone()
+            } else {
+                format!("{} ({percentage})", summary.rate_name)
+            };
             rows.push([
                 format!(
-                    "{} ({percentage}) on {}",
-                    summary.rate_name,
+                    "{rate} on {}",
                     pdf::fmt_money(summary.taxable_net, currency)
                 ),
                 pdf::fmt_money(summary.tax, currency),
@@ -237,16 +245,46 @@ fn percent_label(rate_bp: i64) -> String {
     }
 }
 
-/// The unit price before tax: the entered price for exclusive lines, backed out (rounded half away
-/// from zero, like the stored amounts) for tax-inclusive ones.
-fn unit_ex_tax(unit_price_minor: i64, rate_bp: i64, inclusive: bool) -> i64 {
-    if !inclusive || rate_bp == 0 {
-        return unit_price_minor;
+/// Whether a tax-rate name already states its percentage: "VAT 20%" for 20%, but not "VAT 120%".
+fn names_rate(name: &str, percentage: &str) -> bool {
+    name.match_indices(percentage)
+        .any(|(at, _)| !name[..at].ends_with(|c: char| c.is_ascii_digit() || c == '.' || c == ','))
+}
+
+/// Most decimal places a unit price before tax may add beyond the currency's own two.
+const MAX_UNIT_PRICE_EXTRA_DECIMALS: u32 = 4;
+
+/// The unit price before tax, in minor units, so that unit price × quantity rounds to the line's
+/// amount before tax printed beside it. A tax-exclusive price is the entered one (the amount was
+/// computed from it). A tax-inclusive line's price is its pre-tax amount ÷ quantity, with the fewest
+/// extra decimal places that still multiply back to that amount: $10.00 incl. 15% × 3 is $26.09
+/// before tax, so the unit price shows as $8.697, where a rounded $8.70 × 3 would be $26.10.
+fn unit_ex_tax(line: &PdfLine<'_>) -> Decimal {
+    let entered = Decimal::from(line.unit_price_minor);
+    if !line.tax_inclusive || line.tax_rate_bp == 0 {
+        return entered;
     }
-    let numerator = i128::from(unit_price_minor) * 10_000;
-    let denominator = i128::from(10_000 + rate_bp);
-    let magnitude = (numerator.abs() * 2 + denominator) / (denominator * 2);
-    i64::try_from(numerator.signum() * magnitude).unwrap_or(unit_price_minor)
+    let Some(quantity) = Decimal::from_str(line.quantity.trim())
+        .ok()
+        .filter(|q| q.is_sign_positive() && !q.is_zero())
+    else {
+        return entered;
+    };
+    let net = Decimal::from(line.net_minor);
+    let Some(exact) = net.checked_div(quantity) else {
+        return entered;
+    };
+    let round = |value: Decimal, places: u32| {
+        value.round_dp_with_strategy(places, RoundingStrategy::MidpointAwayFromZero)
+    };
+    let mut unit = exact;
+    for places in 0..=MAX_UNIT_PRICE_EXTRA_DECIMALS {
+        unit = round(exact, places);
+        if unit.checked_mul(quantity).map(|amount| round(amount, 0)) == Some(net) {
+            break;
+        }
+    }
+    unit
 }
 
 /// The line table: prices and amounts before tax with each line's rate, as a tax invoice needs.
@@ -259,10 +297,7 @@ fn line_table(lines: &[PdfLine<'_>], currency: &str) -> (Vec<&'static str>, Vec<
             let mut row = vec![
                 l.description.to_owned(),
                 l.quantity.to_owned(),
-                pdf::fmt_money(
-                    unit_ex_tax(l.unit_price_minor, l.tax_rate_bp, l.tax_inclusive),
-                    currency,
-                ),
+                pdf::fmt_money_exact(unit_ex_tax(l), currency),
             ];
             if taxed {
                 row.push(percent_label(l.tax_rate_bp));
@@ -644,10 +679,23 @@ mod tests {
         ])
         .to_string();
         let rows = document_totals(15000, 1000, 16000, &raw, "AUD");
-        assert!(rows.iter().any(|row| row[0].contains("GST (10.00%)")));
+        assert_eq!(rows[1], ["GST (10%) on A$100.00", "A$10.00"]);
+        assert_eq!(rows[2], ["GST Free (0%) on A$50.00", "A$0.00"]);
         assert!(rows
             .iter()
             .any(|row| row[0] == "Tax total" && row[1] == "A$10.00"));
+
+        // A name that already states its rate isn't repeated; a different rate in it still is.
+        let named = json!([
+            {"rate_name":"VAT 20%","rate_bp":2000,"inclusive":false,"taxable_net":10000,"tax":2000},
+            {"rate_name":"VAT 120%","rate_bp":2000,"inclusive":false,"taxable_net":100,"tax":20},
+            {"rate_name":"Sales tax 8.875%","rate_bp":888,"inclusive":false,"taxable_net":0,"tax":0}
+        ])
+        .to_string();
+        let rows = document_totals(10100, 2020, 12120, &named, "GBP");
+        assert_eq!(rows[1][0], "VAT 20% on £100.00");
+        assert_eq!(rows[2][0], "VAT 120% (20%) on £1.00");
+        assert_eq!(rows[3][0], "Sales tax 8.875% (8.88%) on £0.00");
     }
 
     #[test]
@@ -689,9 +737,67 @@ mod tests {
         assert_eq!(percent_label(1250), "12.5%");
         assert_eq!(percent_label(888), "8.88%");
         assert_eq!(percent_label(0), "0%");
-        assert_eq!(unit_ex_tax(11500, 1500, true), 10000);
-        assert_eq!(unit_ex_tax(-11500, 1500, true), -10000);
-        assert_eq!(unit_ex_tax(999, 2000, false), 999);
+
+        let line = |unit_price_minor, quantity, tax_rate_bp, tax_inclusive, net_minor| PdfLine {
+            description: "Line",
+            quantity,
+            unit_price_minor,
+            tax_rate_bp,
+            tax_inclusive,
+            net_minor,
+        };
+        assert_eq!(
+            unit_ex_tax(&line(11500, "1", 1500, true, 10000)),
+            Decimal::from(10000)
+        );
+        assert_eq!(
+            unit_ex_tax(&line(-11500, "1", 1500, true, -10000)),
+            Decimal::from(-10000)
+        );
+        assert_eq!(
+            unit_ex_tax(&line(999, "3", 2000, false, 2997)),
+            Decimal::from(999)
+        );
+        // $10.00 incl. 15% × 3 is $26.09 before tax: $8.70 × 3 would print as $26.10.
+        let three = line(1000, "3", 1500, true, 2609);
+        assert_eq!(unit_ex_tax(&three), Decimal::new(8697, 1));
+        let (_, rows) = line_table(&[three], "AUD");
+        assert_eq!(rows[0], ["Line", "3", "A$8.697", "15%", "A$26.09"]);
+    }
+
+    #[test]
+    fn inclusive_unit_prices_multiply_out_to_the_printed_amount() {
+        use rmb_domain::document::DocumentLine;
+        use rmb_domain::tax::{line_tax, TaxRate};
+        use rmb_domain::Money;
+
+        let round = |value: Decimal| {
+            value.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+        };
+        for price in [1, 99, 1000, 1999, 12_345, -2_500] {
+            for bp in [500, 888, 1000, 1500, 2000] {
+                for quantity in (1..100).map(Decimal::from).chain([Decimal::new(25, 1)]) {
+                    let rate = TaxRate::new("R", bp, true);
+                    let doc = DocumentLine::new("x", quantity, Money::from_minor(price), rate);
+                    let net = line_tax(doc.line_amount(), &doc.tax_rate).net.minor();
+                    let qty = quantity.to_string();
+                    let unit = unit_ex_tax(&PdfLine {
+                        description: "x",
+                        quantity: &qty,
+                        unit_price_minor: price,
+                        tax_rate_bp: bp,
+                        tax_inclusive: true,
+                        net_minor: net,
+                    });
+                    assert_eq!(
+                        round(unit * quantity),
+                        Decimal::from(net),
+                        "{price} × {qty} at {bp} bp incl. shows {unit}"
+                    );
+                    assert!(unit.scale() <= 2, "{price} × {qty} at {bp} bp needs {unit}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -24,6 +24,7 @@ rmb-data = { path = "../crates/rmb-data" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+rust_decimal = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # PDF generation (offline, byte-identical) via Typst, using its embedded default fonts.
 typst = "=0.15.1"
