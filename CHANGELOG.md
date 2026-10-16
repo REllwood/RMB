@@ -29,6 +29,8 @@ First release candidate of the v1 core.
   custom date ranges.
 - CSV exports for invoices, payments, and customers.
 - PDF export for invoices, quotes, and payment receipts, generated offline from an embedded template.
+  Unit prices before tax always multiply out to the amount printed beside them, and each tax rate
+  reads the same in the line table and the totals.
 - Dashboard: money owed, overdue, unpaid/draft/paid counts, low stock, and recent invoices.
 - Automatic backups on every launch (newest 7 plus one a day for a month), before every upgrade and
   before every restore, plus manual backup. A restore is validated, copied and upgraded before it
@@ -49,7 +51,7 @@ First release candidate of the v1 core.
 - Voids are reported in their own period, drafts released by a void or delete can be billed again, and
   numbering skips numbers already used after a prefix change.
 - Forms ask before unsaved changes are discarded, and simple forms submit with Enter.
-- 227 automated tests (119 Rust, 108 front end), including repeated concurrency races on
+- 229 automated tests (121 Rust, 108 front end), including repeated concurrency races on
   production-configured databases, a randomised invariants run, and an end-to-end pass over the full
   business flow. CI builds and tests the desktop crate too. Reviewed Rust advisory exceptions are
   documented in `deny.toml`.
