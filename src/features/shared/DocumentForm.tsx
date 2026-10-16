@@ -110,14 +110,18 @@ export function DocumentForm({
   const lines = edited ?? [emptyLine(taxes, defaultTaxRateId)];
   const lineIssues = validateEditLines(lines, items);
   const lineProblems = hasLineIssues(lineIssues);
-  const payload = toLineInputs(lines);
   const totals = previewTotals(lines);
 
   async function onSave() {
     setAttempted(true);
-    if (customerId === null || payload.length === 0 || lineProblems) return;
+    if (customerId === null || lines.length === 0 || lineProblems) return;
     try {
-      const id = await save.mutateAsync({ customerId, lines: payload, date: date || null, notes });
+      const id = await save.mutateAsync({
+        customerId,
+        lines: toLineInputs(lines),
+        date: date || null,
+        notes,
+      });
       onSaved(id);
     } catch {
       // useIpcMutation has already shown the backend error.
@@ -199,7 +203,7 @@ export function DocumentForm({
         <div className="flex gap-2">
           <Button
             onClick={onSave}
-            disabled={payload.length === 0}
+            disabled={lines.length === 0}
             loading={save.isPending}
             loadingLabel="Saving…"
           >

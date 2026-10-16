@@ -73,6 +73,13 @@ describe("document line validation", () => {
       },
     ]);
   });
+
+  it("refuses to convert a line that hasn't passed validation instead of inventing a value", () => {
+    // A stand-in such as -1 would be a valid one-cent discount, not a rejected price.
+    expect(() => toLineInputs([line(), line({ price: "12.345" })])).toThrow(/Line 2/);
+    expect(() => toLineInputs([line({ quantity: "0" })])).toThrow(/Line 1/);
+    expect(toLineInputs([line({ price: "-0.01" })])[0].unit_price_minor).toBe(-1);
+  });
 });
 
 const ukRates: TaxRate[] = [

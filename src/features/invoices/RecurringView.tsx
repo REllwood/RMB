@@ -379,7 +379,6 @@ function ScheduleForm({
   const lines = edited ?? [emptyLine(taxes, defaultTaxRateId)];
   const lineIssues = validateEditLines(lines, items);
   const lineProblems = hasLineIssues(lineIssues);
-  const payload = toLineInputs(lines);
   const parsedDueDays =
     dueDays.trim() === "" ? null : parseWholeNumber(dueDays, { min: 0, max: 3_650 });
   const dueDaysValid = dueDays.trim() === "" || parsedDueDays !== null;
@@ -389,7 +388,7 @@ function ScheduleForm({
   const valid =
     customerId !== null &&
     !customerMissing &&
-    payload.length > 0 &&
+    lines.length > 0 &&
     datesValid &&
     dueDaysValid &&
     !lineProblems;
@@ -407,7 +406,7 @@ function ScheduleForm({
           due_days: parsedDueDays,
           notes,
         },
-        lines: payload,
+        lines: toLineInputs(lines),
       });
       onDone();
     } catch {
@@ -530,7 +529,7 @@ function ScheduleForm({
         <div className="flex gap-2">
           <Button
             onClick={onSave}
-            disabled={payload.length === 0}
+            disabled={lines.length === 0}
             loading={save.isPending}
             loadingLabel="Saving…"
           >

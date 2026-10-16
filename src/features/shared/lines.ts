@@ -168,15 +168,26 @@ export function validateEditLines(lines: EditLine[], items: Item[] = []): LineIs
   });
 }
 
-/** Convert validated editor state to the backend payload. Invalid values fail closed. */
+/**
+ * Convert editor state that has passed `validateEditLines` to the backend payload. A quantity or
+ * price that doesn't parse throws instead of being replaced: any stand-in number could be a real
+ * value (a negative price is a discount line), so it would be saved rather than rejected.
+ */
 export function toLineInputs(lines: EditLine[]): LineInput[] {
-  return lines.map((l) => ({
-    item_id: l.item_id,
-    description: l.description.trim(),
-    quantity: normaliseQuantity(l.quantity) ?? "0",
-    unit_price_minor: parseMoney(l.price) ?? -1,
-    tax_rate_name: l.tax.name,
-    tax_rate_bp: l.tax.bp,
-    tax_inclusive: l.tax.inclusive,
-  }));
+  return lines.map((l, index) => {
+    const quantity = normaliseQuantity(l.quantity);
+    const unitPrice = parseMoney(l.price);
+    if (quantity === null || unitPrice === null) {
+      throw new Error(`Line ${index + 1} has an invalid quantity or price`);
+    }
+    return {
+      item_id: l.item_id,
+      description: l.description.trim(),
+      quantity,
+      unit_price_minor: unitPrice,
+      tax_rate_name: l.tax.name,
+      tax_rate_bp: l.tax.bp,
+      tax_inclusive: l.tax.inclusive,
+    };
+  });
 }
