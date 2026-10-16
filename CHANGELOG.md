@@ -18,8 +18,9 @@ First release candidate of the v1 core.
 - Invoices: exact per-line tax on integer minor units; due dates with overdue flags; editable and
   deletable drafts. Issuing assigns a gapless number, freezes business and customer snapshots, and
   decrements tracked stock once. Issued invoices are immutable — void and reissue to correct.
-- Recurring invoices: weekly through yearly schedules with optional end date and payment terms. Due
-  schedules draft themselves at startup, catching up on any periods missed while the app was closed.
+- Recurring invoices: weekly through yearly schedules with optional end date and payment terms
+  (a schedule without its own terms uses the default payment terms). Due schedules draft themselves
+  at startup, catching up on any periods missed while the app was closed.
 - Payments: partial or full with method and reference, overpayments rejected, mis-entries removable
   (status re-derives), and per-invoice payment history.
 
@@ -48,7 +49,7 @@ First release candidate of the v1 core.
 - Voids are reported in their own period, drafts released by a void or delete can be billed again, and
   numbering skips numbers already used after a prefix change.
 - Forms ask before unsaved changes are discarded, and simple forms submit with Enter.
-- 224 automated tests (117 Rust, 107 front end), including repeated concurrency races on
+- 226 automated tests (118 Rust, 108 front end), including repeated concurrency races on
   production-configured databases, a randomised invariants run, and an end-to-end pass over the full
   business flow. CI builds and tests the desktop crate too. Reviewed Rust advisory exceptions are
   documented in `deny.toml`.
