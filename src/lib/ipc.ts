@@ -36,8 +36,6 @@ import type {
  * nested object fields stay snake_case to match serde.
  */
 export const ipc = {
-  greet: (name: string) => invoke<string>("greet", { name }),
-
   // app meta + backup
   getMeta: (key: string) => invoke<string | null>("get_meta", { key }),
   setMeta: (key: string, value: string) => invoke<void>("set_meta", { key, value }),

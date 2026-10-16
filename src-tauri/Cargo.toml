@@ -19,7 +19,6 @@ tauri-build = { version = "2.6.3", features = [] }
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-single-instance = "2.4.5"
-rmb-domain = { path = "../crates/rmb-domain" }
 rmb-data = { path = "../crates/rmb-data" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,3 +30,7 @@ typst = "=0.15.1"
 typst-pdf = "=0.15.1"
 typst-as-lib = "=0.16.0"
 typst-assets = { version = "0.15.1", features = ["fonts"] }
+
+[dev-dependencies]
+# Tests check PDF figures against the domain's own tax rules.
+rmb-domain = { path = "../crates/rmb-domain" }
